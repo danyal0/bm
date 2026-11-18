@@ -23,7 +23,7 @@
       <video id="video" playsinline muted autoplay></video>
       <canvas id="overlay"></canvas>
       <div class="hud" id="hud" hidden>
-        <div class="hud-mode"><span id="hMode" class="mode">SEARCH</span><span id="hStride"></span></div>
+        <div class="hud-mode"><span id="hMode" class="mode">SEARCH</span><span id="h3d" class="chip3d">2D</span><span id="hStride"></span></div>
         <div class="hud-grid">
           <span>fps</span><b id="hFps">–</b>
           <span>analysed</span><b id="hRatio">–</b>
@@ -51,7 +51,7 @@
         <button class="btn primary" data-act="camera" title="Rear camera, highest frame rate available">📷 Camera</button>
         <button class="btn" data-act="upload">⬆ Video</button>
         <button class="btn" data-act="train" title="Pick several videos – it learns from each one in turn">🎓 Train on videos</button>
-        <button class="btn ghost" data-act="demo">▶ Demo</button>
+        <button class="btn ghost" data-act="demo" title="3D rally seen from behind the court">▶ Demo</button>
         <span class="spacer"></span>
         <button class="btn icon" id="btnPlay" data-act="play" disabled title="Play / pause">⏯</button>
         <button class="btn icon" data-act="stop" title="Stop">■</button>
@@ -63,12 +63,17 @@
         <label class="tog"><input type="checkbox" id="optPredict" checked><span>Prediction</span></label>
         <label class="tog"><input type="checkbox" id="optLearn" checked><span>Learn</span></label>
         <label class="tog"><input type="checkbox" id="optQuality"><span>Every frame</span></label>
+        <label class="tog"><input type="checkbox" id="optCourt" checked><span>Court</span></label>
         <label class="tog"><input type="checkbox" id="optDebug"><span>Debug</span></label>
+        <button class="btn small" id="btnCalib" title="Calibrate the court for 3D tracking">🎯 Court 3D</button>
         <label class="sel">Res
-          <select id="optRes"><option value="320">320</option><option value="480" selected>480</option><option value="640">640</option><option value="800">800</option></select>
+          <select id="optRes"><option value="320">320</option><option value="480">480</option><option value="640" selected>640</option><option value="800">800</option></select>
         </label>
         <label class="sel">Players
           <select id="optPlayers"><option value="0">off</option><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select>
+        </label>
+        <label class="sel">Lines
+          <select id="optLines"><option value="singles">singles</option><option value="doubles">doubles</option></select>
         </label>
         <label class="sel">Speed
           <select id="optRate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
@@ -123,6 +128,27 @@
   <input type="file" id="fileOne" accept="video/*" hidden>
   <input type="file" id="fileMany" accept="video/*" multiple hidden>
   <input type="file" id="fileBrain" accept="application/json,.json" hidden>
+
+  <dialog id="calib">
+    <div class="calib-body">
+      <div class="calib-head">
+        <b>Court calibration</b>
+        <span id="calibStep">Tap a line crossing on the video, then the same point on the court map. 4 or more points (6 is better), spread over the court.</span>
+      </div>
+      <div class="calib-main">
+        <div class="calib-img"><canvas id="calibCanvas"></canvas></div>
+        <svg id="calibCourt" viewBox="-1.2 -0.9 8.5 15.2" aria-label="Court map"></svg>
+      </div>
+      <div class="row">
+        <button class="btn small" id="cAuto" title="Find the court lines automatically">Auto-detect</button>
+        <button class="btn small" id="cUndo">Undo</button>
+        <button class="btn small" id="cClear">Clear</button>
+        <span class="spacer"></span>
+        <button class="btn small ghost" id="cCancel">Cancel</button>
+        <button class="btn small primary" id="cSave" disabled>Use calibration</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="viewer">
     <div class="viewer-body">

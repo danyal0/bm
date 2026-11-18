@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const input = args[0];
 if (!input) { console.error('usage: node test/run-video.mjs input.mp4 [--start s] [--secs s] [--res 640] [--out out.mp4]'); process.exit(1); }
-const start = +opt('start', 0), secs = +opt('secs', 20), res = +opt('res', 640), out = opt('out', ''), brainFile = opt('brain', ''), dump = opt('dump', '');
+const start = +opt('start', 0), secs = +opt('secs', 20), res = +opt('res', 640), out = opt('out', ''), brainFile = opt('brain', ''), dump = opt('dump', ''), calib = opt('calib', '');
 const shownLog = [];
 
 // minimal canvas shim: the detector "draws" the frame we hand it
@@ -26,6 +26,7 @@ globalThis.document = {
 const { Brain } = await import('../js/learner.js');
 const { MotionDetector } = await import('../js/detector.js');
 const { Tracker } = await import('../js/tracker.js');
+const { CourtCamera } = await import('../js/camera.js');
 
 // probe size / fps
 const probe = await new Promise(r => {
@@ -44,6 +45,13 @@ det.configure(W, H, W);
 const tracker = new Tracker(brain);
 tracker.setGeometry(det.W, det.H);
 tracker.dt = 1 / fps;
+let cam = null;
+if (calib) {
+  const j = JSON.parse(readFileSync(calib, 'utf8'));
+  cam = CourtCamera.fromJSON({ ...j, theta: [j.theta[0] * (+vw / j.vw), ...j.theta.slice(1)], vw: +vw, vh: +vh });
+  tracker.setCamera(cam);
+}
+let shown3d = 0, predShown = 0;
 brain.beginSession('file', input);
 
 const dec = spawn('ffmpeg', ['-v', 'error', '-ss', String(start), '-t', String(secs), '-i', input, '-an', '-vf', `scale=${W}:${H}`, '-f', 'rawvideo', '-pix_fmt', 'rgba', 'pipe:1']);
@@ -78,6 +86,8 @@ function step(frame) {
   brain.countFrame(!!d);
   if (tracker.track) tracksSeen.add(tracker.track.id);
   const est = tracker.displayState(t);
+  if (est && tracker.disp && tracker.disp.is3d) shown3d++;
+  if (est && tracker.disp && tracker.disp.predicted) predShown++;
   if (est) { shown++; shownTracks.add(tracker.track.id); shownLog.push({ f: idx, t: +(start + t).toFixed(3), id: tracker.track.id, stale: Math.round((t - tracker.track.lastMeas.t) * fps), p: +(tracker.track.lastMeas.p || 0).toFixed(2), nisAvg: +(tracker.track.nisAvg || 0).toFixed(1), conf: +(tracker.track.conf || 0).toFixed(2), onP: +(tracker.track.onP || 0).toFixed(2), act: +((tracker.track.lastMeas.f || [])[10] || 0).toFixed(2), area: tracker.track.lastMeas.area, nm: tracker.track.nMeas, x: +(est[0] / W).toFixed(4), y: +(est[1] / H).toFixed(4) }); }
   if (!enc) return;
   const o = Buffer.from(frame);
@@ -87,7 +97,12 @@ function step(frame) {
   }
   const tr = tracker.trail;
   for (let i = 1; i < tr.length; i++) if (tr[i].v && tr[i - 1].v && tr[i].id === tr[i - 1].id && tr[i].t - tr[i - 1].t < 0.12) line(o, tr[i - 1].x, tr[i - 1].y, tr[i].x, tr[i].y, [190, 255, 60]);
-  if (est) { ring(o, est[0], est[1], 7, [190, 255, 60]); ring(o, est[0], est[1], 8, [190, 255, 60]); }
+  if (cam && idx === 1) cam.off.x = cam.off.y = 0;
+  if (est) {
+    const c = tracker.disp && tracker.disp.predicted ? [60, 220, 255] : [190, 255, 60];
+    ring(o, est[0], est[1], 7, c); ring(o, est[0], est[1], 8, c);
+    if (tracker.disp && tracker.disp.predicted) ring(o, est[0], est[1], Math.max(9, 2 * tracker.disp.sigma), [60, 220, 255]);
+  }
   for (const e of events) {
     const age = t - e.t; if (age < 0 || age > 1) continue;
     const c = e.type === 'hit' ? [255, 60, 240] : e.type === 'land' ? [255, 70, 70] : [255, 176, 46];
@@ -106,10 +121,10 @@ brain.endSession(true);
 const by = k => events.filter(e => e.type === k);
 const summary = {
   frames: idx, res: `${W}x${H}`, fps, analysed: +(processed / idx).toFixed(2), msPerFrame: +(ms / idx).toFixed(2),
-  tracks: tracksSeen.size, shownTracks: shownTracks.size, shownFrames: +(shown / idx).toFixed(2),
+  tracks: tracksSeen.size, shownTracks: shownTracks.size, shownFrames: +(shown / idx).toFixed(2), shown3d: +(shown3d / idx).toFixed(2), predicted: +(predShown / idx).toFixed(2), k3: +tracker.k3.toFixed(3),
   hits: by('hit').length, lands: by('land').length, deflects: by('deflect').length,
   g: +tracker.phys.g.toFixed(3), k: +tracker.phys.k.toFixed(3),
-  events: events.map(e => `${e.type}@${e.t.toFixed(2)}(${Math.round(e.x)},${Math.round(e.y)})`).join(' '),
+  events: events.map(e => `${e.type}@${e.t.toFixed(2)}(${Math.round(e.x)},${Math.round(e.y)})${e.world ? '[' + e.world.map(v => v.toFixed(1)).join(',') + (e.in != null ? (e.in ? ' IN' : ' OUT') : '') + ']' : ''}${e.src ? ':' + e.src : ''}`).join(' '),
 };
 console.log(JSON.stringify(summary, null, 1));
 if (brainFile) writeFileSync(brainFile, brain.exportJSON());

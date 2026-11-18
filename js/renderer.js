@@ -2,6 +2,7 @@
 // prediction with landing spot, skeletons, event bursts, debug layers.
 
 import { BONES } from './pose.js';
+import { LINES, COURT } from './camera.js';
 
 const PLAYER_COLORS = ['#38d6ff', '#ff8a3d', '#b78cff', '#4dff9a'];
 
@@ -62,6 +63,18 @@ export class Renderer {
       }
     }
 
+    // calibrated court (shows the 3D model is locked on)
+    if (st.cam && st.opts.court) {
+      ctx.strokeStyle = 'rgba(56,214,255,.28)'; ctx.lineWidth = 1.2 * u;
+      for (const [x0, y0, x1, y1] of LINES) {
+        ctx.beginPath();
+        for (let i = 0; i <= 12; i++) { const p = st.cam.project(x0 + (x1 - x0) * i / 12, y0 + (y1 - y0) * i / 12, 0); if (p) (i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); }
+        ctx.stroke();
+      }
+      const a = st.cam.project(0, COURT.NET_Y, COURT.NET_H), b = st.cam.project(COURT.W, COURT.NET_Y, COURT.NET_H);
+      if (a && b) { ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke(); }
+    }
+
     // skeletons
     if (st.opts.skeleton) {
       st.players.forEach((p, i) => {
@@ -105,7 +118,7 @@ export class Renderer {
         if (b.t - a.t > 0.12 || a.id !== b.id || !a.v || !b.v) continue;
         const age = Math.max(0, Math.min(1, (tNow - b.t) / 1.0));
         ctx.globalAlpha = 1 - age;
-        ctx.strokeStyle = speedColor(kmh(b.sp));
+        ctx.strokeStyle = speedColor(b.kmh ?? kmh(b.sp));
         ctx.lineWidth = (5 - 3.5 * age) * u;
         ctx.beginPath(); ctx.moveTo(X(a.x), Y(a.y)); ctx.lineTo(X(b.x), Y(b.y)); ctx.stroke();
       }
@@ -114,8 +127,9 @@ export class Renderer {
         const age = (tNow - p.t) / 1.0;
         if (age > 1 || !p.v) continue;
         ctx.globalAlpha = 1 - age;
+        // solid = measured in the image, hollow = filled in by the equations of motion
         if (p.m) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 2 * u, 0, 7); ctx.fill(); }
-        else { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1 * u; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 2.2 * u, 0, 7); ctx.stroke(); }
+        else { ctx.strokeStyle = p.bridged ? 'rgba(56,214,255,.9)' : 'rgba(255,255,255,.7)'; ctx.lineWidth = 1 * u; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 2.2 * u, 0, 7); ctx.stroke(); }
       }
       ctx.globalAlpha = 1;
     }
@@ -135,8 +149,8 @@ export class Renderer {
         ctx.beginPath(); ctx.ellipse(X(L.x), Y(L.y), 16 * u, 5 * u, 0, 0, 7); ctx.stroke();
         ctx.beginPath(); ctx.ellipse(X(L.x), Y(L.y), 7 * u, 2.2 * u, 0, 0, 7); ctx.stroke();
         ctx.font = `600 ${11 * u}px system-ui, sans-serif`;
-        ctx.fillStyle = '#d6ff3d';
-        ctx.fillText(`${Math.max(0, L.t - st.t).toFixed(2)}s`, X(L.x) + 18 * u, Y(L.y) + 4 * u);
+        ctx.fillStyle = L.in == null ? '#d6ff3d' : L.in ? '#7dff9a' : '#ff6b6b';
+        ctx.fillText(`${L.in == null ? '' : L.in ? 'IN ' : 'OUT '}${Math.max(0, L.t - st.t).toFixed(2)}s`, X(L.x) + 18 * u, Y(L.y) + 4 * u);
       }
     }
 
@@ -146,16 +160,24 @@ export class Renderer {
       const sx = X(x), sy = Math.max(Y(y), m.oy + 4 * u);
       const off = y < 0;
       const sp = Math.hypot(vx, vy);
-      const col = speedColor(kmh(sp));
+      const kNow = st.kmhNow ?? kmh(sp);
+      const col = speedColor(kNow);
+      const predicted = !!(st.disp && st.disp.predicted);
       const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 26 * u);
       g.addColorStop(0, hexA(col, 0.85)); g.addColorStop(0.35, hexA(col, 0.35)); g.addColorStop(1, hexA(col, 0));
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(sx, sy, 26 * u, 0, 7); ctx.fill();
-      ctx.strokeStyle = st.measured ? '#fff' : col;
+      ctx.strokeStyle = predicted ? '#38d6ff' : st.measured ? '#fff' : col;
       ctx.lineWidth = 2 * u;
       ctx.setLineDash(st.measured ? [] : [3 * u, 3 * u]);
       ctx.beginPath(); ctx.arc(sx, sy, 10 * u, 0, 7); ctx.stroke();
       ctx.setLineDash([]);
+      // physics-predicted position: show how sure the equations are
+      if (predicted) {
+        const r = Math.max(12 * u, 2 * st.disp.sigma * m.sx);
+        ctx.strokeStyle = 'rgba(56,214,255,.45)'; ctx.lineWidth = 1 * u;
+        ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.stroke();
+      }
       if (off) { // off the top of the frame, still tracked by physics
         ctx.fillStyle = col;
         ctx.beginPath(); ctx.moveTo(sx, m.oy + 2 * u); ctx.lineTo(sx - 8 * u, m.oy + 14 * u); ctx.lineTo(sx + 8 * u, m.oy + 14 * u); ctx.fill();
@@ -170,7 +192,7 @@ export class Renderer {
       ctx.font = `700 ${12 * u}px system-ui, sans-serif`;
       ctx.fillStyle = '#fff';
       ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 3 * u;
-      const label = `${Math.round(kmh(sp))} km/h${off ? ' ↑' : ''}`;
+      const label = `${Math.round(kNow)} km/h${off ? ' ↑' : ''}${predicted ? ' · predicted' : ''}`;
       ctx.strokeText(label, sx + 14 * u, sy - 12 * u);
       ctx.fillText(label, sx + 14 * u, sy - 12 * u);
     }
@@ -190,13 +212,13 @@ export class Renderer {
           const an = (i * Math.PI) / 4;
           ctx.beginPath(); ctx.moveTo(ex + Math.cos(an) * r * 0.5, ey + Math.sin(an) * r * 0.5); ctx.lineTo(ex + Math.cos(an) * r * 0.8, ey + Math.sin(an) * r * 0.8); ctx.stroke();
         }
-        badge(ctx, ex, ey - r - 8 * u, `HIT${e.kmh ? ' ' + Math.round(e.kmh) + ' km/h' : ''}`, '#ff3df2', u);
+        badge(ctx, ex, ey - r - 8 * u, `HIT${e.kmh ? ' ' + Math.round(e.kmh) + ' km/h' : ''}${e.world ? ' · ' + e.world[2].toFixed(1) + ' m' : ''}`, '#ff3df2', u);
       } else if (e.type === 'land') {
         ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 3 * u;
         const r = 10 * u;
         ctx.beginPath(); ctx.moveTo(ex - r, ey - r); ctx.lineTo(ex + r, ey + r); ctx.moveTo(ex + r, ey - r); ctx.lineTo(ex - r, ey + r); ctx.stroke();
         ctx.beginPath(); ctx.ellipse(ex, ey, (14 + 30 * age) * u, (4 + 9 * age) * u, 0, 0, 7); ctx.stroke();
-        badge(ctx, ex, ey - 22 * u, 'GROUND', '#ff4d4d', u);
+        badge(ctx, ex, ey - 22 * u, e.in == null ? 'GROUND' : e.in ? 'GROUND · IN' : 'GROUND · OUT', e.in === true ? '#7dff9a' : '#ff4d4d', u);
       } else if (e.type === 'deflect') {
         ctx.strokeStyle = '#ffb02e'; ctx.lineWidth = 2.5 * u;
         ctx.beginPath(); ctx.arc(ex, ey, 12 * u, 0, 7); ctx.stroke();

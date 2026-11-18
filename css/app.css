@@ -162,3 +162,21 @@ dialog::backdrop { background: rgba(0, 0, 0, .7); }
   .btn { padding: 8px 11px; }
   .kf { width: 160px; }
 }
+
+.chip3d { font-weight: 800; font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #2a3346; color: var(--muted); }
+.chip3d.on { background: var(--cyan); color: #001a22; }
+dialog#calib {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 12px;
+  width: min(1200px, calc(100vw - 16px)); max-height: calc(100vh - 16px);
+}
+.calib-body { display: grid; gap: 10px; }
+.calib-head { display: grid; gap: 4px; font-size: 13px; }
+.calib-head span { color: var(--muted); }
+.calib-main { display: grid; grid-template-columns: 1fr 180px; gap: 10px; align-items: start; }
+.calib-img canvas { width: 100%; height: auto; display: block; border-radius: 8px; background: #000; cursor: crosshair; touch-action: manipulation; }
+#calibCourt { width: 100%; background: #1f6b4f; border-radius: 8px; }
+#calibCourt .kp { fill: rgba(255,255,255,.35); stroke: #fff; stroke-width: .04; cursor: pointer; }
+#calibCourt .kp:hover, #calibCourt .kp.armed { fill: var(--accent); }
+#calibCourt .kp.used { fill: var(--hit); }
+#calibCourt text { font-size: .42px; fill: #fff; font-weight: 700; pointer-events: none; }
+@media (max-width: 700px) { .calib-main { grid-template-columns: 1fr; } #calibCourt { max-width: 220px; justify-self: center; } }

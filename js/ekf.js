@@ -150,4 +150,13 @@ export class ShuttleEKF {
   posStd() {
     return Math.sqrt(Math.max(this.P[0], this.P[5]));
   }
+
+  // ---- common motion-model interface (shared with ShuttleEKF3D) ----
+  get is3d() { return false; }
+  img() { return Float64Array.from(this.s); }
+  imageAt(dt) { return propagate(this.s, this.g, this.k, dt); }
+  imgVar() { return { pos: Math.sqrt(Math.max(this.P[0], this.P[5])), vel: Math.sqrt(Math.max(this.P[10], this.P[15])) }; }
+  qImg() { return this.q; }
+  setQScale(scale, base) { this.q = base * scale * scale; }
+  shift(dx, dy) { this.s[0] += dx; this.s[1] += dy; }
 }

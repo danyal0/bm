@@ -41,7 +41,9 @@ frame ──► scheduler ──(skip)──► EKF prediction fills the frame (
 | `js/learner.js` | The persistent **Brain** (see below). |
 | `js/keyframes.js` | Ring buffer of recent analysed frames. Only the frame nearest the solved event time is kept and annotated. |
 | `js/renderer.js` | Overlay: glow, trail (solid dots are measured frames, hollow dots are frames filled by equations), predicted path and landing time, skeletons, event bursts, debug layers. |
-| `js/demo.js` | Synthetic rally with true aerodynamics (g = 9.81 m/s², vₜ = 6.8 m/s) for testing and pre-training. |
+| `js/camera.js` | Court calibration: homography, a pinhole camera with radial distortion fitted by Levenberg–Marquardt, line-ridge refinement, zero-tap auto-calibration, projection and Jacobians, floor back-projection, IN/OUT. |
+| `js/ekf3d.js` | 3D shuttle EKF in metres, lifting image tracks to 3D (with priors and drag fitting), floor contact. |
+| `js/demo.js` / `js/demo3d.js` | Synthetic rallies with true aerodynamics: a side view (2D), and a behind-the-court 3D view through a calibrated camera with ground truth. |
 
 ### Scheduler: which frames get pixels
 
@@ -67,6 +69,42 @@ http://localhost:8000/test/bench.html?seeds=1,2,3,4,5,6&secs=90        # add &qu
 
 Typical result: **hits about 85% recall / 94% precision** with a mean timing error of about 11 ms, and **landings about 68% / 80%**. About 55% of frames are analysed, at about 1.6 ms per frame (excluding pose). Hit recall rises from about 79% on the first rally to about 89% by the sixth. The learned `g, k` settle within a few percent of the truth. On real footage, the pose model supplies player and racket zones, which mainly helps tell hits from landings.
 
+## 3D court mode (camera behind the court)
+
+From behind and above the court (the usual phone, tripod or fan-cam spot), perspective bends every flight in the image. A 2D image-plane physics model then gives wrong drag (the marker lags near the top of high shots), has no meaningful "floor" line (landings are missed), and rejects real flights (gaps). So the app tracks the shuttle in **real 3D court coordinates**:
+
+1. **Calibration**
+   - **Zero-tap first:** it starts from a saved camera or a built-in "behind the court" preset and snaps to the white court lines. It's accepted only when most lines match, so a slightly moved tripod is recovered automatically.
+   - **Otherwise: 🎯 Court 3D.** Tap 4 or more line crossings on the video and the same points on the court map (net-post tops work too).
+   - **Camera model:** a pinhole camera with radial distortion, fitted by Levenberg–Marquardt to the taps, then refined by minimising the *point-to-line* distance to the detected line ridges.
+2. **Lift to 3D.** Gravity is known in metres, so a single camera can recover depth: only one gravity-plus-drag trajectory explains a handful of image points.
+   - Each track is re-solved at 10, 14, 18, 24 … points.
+   - It uses a prior on where the flight started: the hitter's floor position (from their feet), or the contact point of the previous flight.
+3. **3D Kalman filter** with state `[X Y Z VX VY VZ]`, dynamics `dV/dt = −9.81·ẑ − k‖V‖V`, and the camera projection (with its Jacobian) as the measurement.
+4. **Gaps are filled with physics.**
+   - Unseen frames come from integrating the 3D equations of motion. They're drawn as *predicted* (a cyan dashed ring whose size is the predicted uncertainty) for as long as that uncertainty stays small.
+   - When the shuttle reappears, the gap is redrawn with the trajectory that joins both ends, blended forward and backward.
+   - Tracks that continue the same flight are joined into one.
+5. **Landings happen where the 3D flight meets the floor plane (Z = 0).** The floor point comes from the image position at touchdown, where Z = 0 is exact.
+   - **IN/OUT** is called against singles or doubles lines.
+   - A touchdown inside a player's reach only counts if a motionless shuttle is then seen lying there, because players catch, tap and lift shuttles at their feet.
+6. **Only physically confirmed 3D flights report events.** A hit is reported once its *outgoing* flight lifts as a real 3D trajectory starting from the contact point.
+7. **Learning:** the true drag `k` of your shuttles (terminal velocity `√(9.81/k)`) is fitted from whole flights.
+
+Ground truth: `test/bench.html?view=behind` renders 3D rallies through a calibrated behind-the-court camera. Over 6 seeds × 60 s, compared with the 2D tracker on the same view:
+
+| | 2D model | **3D court model** |
+|---|---|---|
+| hits (recall / precision) | ≈0% / – | **70% / 93%** |
+| landings (recall / precision) | ≈0% / – | **70% / 92%** |
+| drawn marker on the shuttle | – | **97%** |
+| flight frames covered | ≈0% | **71%** |
+| IN/OUT calls | – | **46 / 47** |
+| landing position error | – | 0.2–0.75 m |
+| learned drag k (true 0.21) | – | 0.203–0.235 |
+
+On the real Denmark Open 2015 fan-cam clip, compared with the earlier 2D version: frames with the shuttle marked went from about 9% to about 33%. Landings went from none to several per 30 s with court positions and IN/OUT. Hits come with their contact height (for example an overhead at 2.7 m).
+
 ## Real broadcast footage
 
 Broadcast and fan-cam video adds crowd motion, LED boards, camera shake, cuts, TV graphics, and players large enough to fill half the frame. Defences:
@@ -86,7 +124,7 @@ The *broadcast* synthetic benchmark (`bench.html?broadcast=1`) went from 16% to 
 node test/run-video.mjs match.mp4 --start 88 --secs 30 --res 640 --out annotated.mp4 --dump shown.json --brain brain.json
 ```
 
-Passing `--brain` loads and saves the learned brain, so you can pre-train on many clips and import the JSON into the app.
+Add `--calib cam.json` (a `CourtCamera.toJSON()`) to run in 3D court mode. Passing `--brain` loads and saves the learned brain, so you can pre-train on many clips and import the JSON into the app.
 
 ## Tips
 

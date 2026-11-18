@@ -15,10 +15,15 @@ const secs = +(q.get('secs') || 90);
 const quality = q.get('quality') === '1';
 const fps = +(q.get('fps') || 60);
 const broadcast = q.get('broadcast') === '1';
+const behind = q.get('view') === 'behind';          // 3D court view from behind/above (fan-cam)
+const calib = q.get('calib') !== '0';               // give the tracker the court calibration
+const calibErr = +(q.get('calibErr') || 0);         // px of error in the tapped points (tests robustness)
 const { Brain } = await import('../js/learner.js');
 const { MotionDetector } = await import('../js/detector.js');
 const { Tracker } = await import('../js/tracker.js');
 const { DemoRally } = await import('../js/demo.js');
+const { DemoRally3D } = await import('../js/demo3d.js');
+const { CourtCamera } = await import('../js/camera.js');
 
 function score(truth, det, tol = 0.1) {
   const used = new Set(); let tp = 0, dts = [];
@@ -34,7 +39,7 @@ const results = [];
 const brain = new Brain({ persist: false });   // one brain learns across all seeds (like several videos)
 for (const seed of seeds) {
   Math.random = mulberry32(seed);
-  const demo = new DemoRally();
+  const demo = behind ? new DemoRally3D() : new DemoRally();
   demo.simClock = true;
   demo.broadcast = broadcast;
   const det = new MotionDetector();
@@ -42,7 +47,14 @@ for (const seed of seeds) {
   det.configure(demo.w, demo.h, 480);
   tracker.setGeometry(det.W, det.H);
   tracker.dt = 1 / fps;
+  if (behind && calib) {
+    // re-calibrate from "tapped" points like a user would (optionally with tap error)
+    const court = [[0, 0], [6.1, 0], [0, 8.68], [6.1, 8.68], [3.05, 4.72], [3.05, 12.64], [0, 6.7, 1.55], [6.1, 6.7, 1.55]];
+    const img = court.map(c => demo.cam.projectVideo(c[0], c[1], c[2] || 0)).map(([u, v]) => [u + (Math.random() - 0.5) * 2 * calibErr, v + (Math.random() - 0.5) * 2 * calibErr]);
+    tracker.setCamera(CourtCamera.fromPoints(court, img, demo.w, demo.h));
+  }
   brain.beginSession('bench', 'seed ' + seed);
+  let landErr = 0, landN = 0, callOk = 0, callN = 0;
   const events = [];
   let processed = 0, ms = 0, shown = 0, shownOk = 0, flying = 0, flyingShown = 0;
   const N = Math.round(secs * fps);
@@ -64,9 +76,17 @@ for (const seed of seeds) {
     ms += performance.now() - t0;
     // what the overlay would draw this frame vs. the true shuttle
     const est = tracker.displayState ? tracker.displayState(t) : tracker.stateAt(t);
-    const sh = demo.sh, inAir = sh && !sh.landed;
-    const sc = det.W / demo.w, ox = broadcast && demo.cam ? demo.cam.x : 0, oy = broadcast && demo.cam ? demo.cam.y : 0;
-    const tx = inAir ? (demo.sx(sh.x) + ox) * sc : 0, ty = inAir ? (demo.sy(sh.y) + oy) * sc : 0;
+    let inAir, tx = 0, ty = 0;
+    const sc = det.W / demo.w;
+    if (behind) {
+      const ti = demo.truthImage();
+      inAir = !!(ti && ti.inAir);
+      if (inAir) { tx = ti.x * sc; ty = ti.y * sc; }
+    } else {
+      const sh = demo.sh; inAir = sh && !sh.landed;
+      const ox = broadcast && demo.cam ? demo.cam.x : 0, oy = broadcast && demo.cam ? demo.cam.y : 0;
+      if (inAir) { tx = (demo.sx(sh.x) + ox) * sc; ty = (demo.sy(sh.y) + oy) * sc; }
+    }
     if (inAir && ty > 0) flying++;
     if (est && est[1] > 0) {
       shown++;
@@ -78,21 +98,35 @@ for (const seed of seeds) {
   const hitsT = demo.log.filter(e => e.type === 'hit' && !e.serve), landsT = demo.log.filter(e => e.type === 'land');
   const h = score(hitsT, events.filter(e => e.type === 'hit' || e.type === 'deflect'));
   const l = score(landsT, events.filter(e => e.type === 'land'));
+  if (q.get('debug') === '1') {
+    const fp = events.filter(e => ['hit', 'deflect', 'land'].includes(e.type) && !demo.log.some(g => g.type === (e.type === 'deflect' ? 'hit' : e.type) && !g.serve && Math.abs(g.t - e.t) < 0.1));
+    const missed = demo.log.filter(g => g.type === 'land' && !events.some(e => e.type === 'land' && Math.abs(e.t - g.t) < 0.1));
+    window.__fp = (window.__fp || []).concat(missed.map(g => `MISSED land t=${g.t.toFixed(2)} nearby: ` + events.filter(e => Math.abs(e.t - g.t) < 0.6 && e.type !== 'start').map(e => `${e.type}:${e.src || ''}@${(e.t - g.t).toFixed(2)}`).join(' ')));
+    window.__fp = (window.__fp || []).concat(fp.slice(0, 12).map(e => `${e.type}:${e.src} t=${e.t.toFixed(2)} img(${Math.round(e.x)},${Math.round(e.y)}) w=${e.world ? e.world.map(v => v.toFixed(1)).join(',') : '-'} nearestTruth=${(() => { const g = demo.log.reduce((b, g) => Math.abs(g.t - e.t) < Math.abs(b.t - e.t) ? g : b, demo.log[0]); return g.type + '@' + (g.t - e.t).toFixed(2) + 's'; })()}`));
+  }
+  // landing position & line-call accuracy (3D)
+  for (const d of events.filter(e => e.type === 'land' && e.world)) {
+    const g = landsT.find(x => Math.abs(x.t - d.t) < 0.15);
+    if (!g) continue;
+    landErr += Math.hypot(d.world[0] - g.X, d.world[1] - g.Y); landN++;
+    if (d.in != null) { callN++; if (d.in === g.in) callOk++; }
+  }
   const s = brain.session;
-  results.push({ seed, h, l, ratio: processed / N, ms: ms / N, g: tracker.phys.g, k: tracker.phys.k, acc: s.labels ? s.correct / s.labels : 0, tracks: s.tracks, disp: shownOk / Math.max(1, shown), cov: flyingShown / Math.max(1, flying) });
-  results[results.length - 1].brain = JSON.stringify({ w: brain.data.detector.w.map(x => +x.toFixed(2)), mu: +brain.data.detector.areaMu.toFixed(2), v: +brain.data.detector.areaVar.toFixed(2), thr: +brain.data.detector.threshMult.toFixed(2), g: +brain.data.physics.g.toFixed(3), k: +brain.data.physics.k.toFixed(3), skip: brain.data.skip.err.map(x => +x.toFixed(4)), heatMax: +brain.data.heatMax.toFixed(0), floor: tracker.floorEstimate() && +tracker.floorEstimate().toFixed(0), q: +tracker.qScale.toFixed(2) });
+  results.push({ seed, h, l, ratio: processed / N, ms: ms / N, g: tracker.phys.g, k: tracker.phys.k, acc: s.labels ? s.correct / s.labels : 0, tracks: s.tracks, disp: shownOk / Math.max(1, shown), cov: flyingShown / Math.max(1, flying), landErr: landN ? landErr / landN : null, calls: callN ? `${callOk}/${callN}` : '-', k3: tracker.k3 });
+  if (false) results[results.length - 1].brain = JSON.stringify({ w: brain.data.detector.w.map(x => +x.toFixed(2)), mu: +brain.data.detector.areaMu.toFixed(2), v: +brain.data.detector.areaVar.toFixed(2), thr: +brain.data.detector.threshMult.toFixed(2), g: +brain.data.physics.g.toFixed(3), k: +brain.data.physics.k.toFixed(3), skip: brain.data.skip.err.map(x => +x.toFixed(4)), heatMax: +brain.data.heatMax.toFixed(0), floor: tracker.floorEstimate() && +tracker.floorEstimate().toFixed(0), q: +tracker.qScale.toFixed(2) });
   brain.endSession(true);
 }
 const f = x => (x * 100).toFixed(0).padStart(3) + '%';
 let txt = 'seed | hits rec  prec  Δt   | lands rec  prec  Δt   | analysed  ms/frame | g (1.090)  k (1.908) | det-agree | shown-correct coverage\n';
 const agg = { ht: 0, hd: 0, htp: 0, lt: 0, ld: 0, ltp: 0 };
 for (const r of results) {
-  txt += `${String(r.seed).padStart(4)} | ${f(r.h.tp / Math.max(1, r.h.truth))} ${f(r.h.tp / Math.max(1, r.h.det))} ${(r.h.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.l.tp / Math.max(1, r.l.truth))} ${f(r.l.tp / Math.max(1, r.l.det))} ${(r.l.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.ratio)}     ${r.ms.toFixed(2)}   | ${r.g.toFixed(3)}     ${r.k.toFixed(3)} | ${f(r.acc)}     | ${f(r.disp)}  ${f(r.cov)}\n`;
+  txt += `${String(r.seed).padStart(4)} | ${f(r.h.tp / Math.max(1, r.h.truth))} ${f(r.h.tp / Math.max(1, r.h.det))} ${(r.h.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.l.tp / Math.max(1, r.l.truth))} ${f(r.l.tp / Math.max(1, r.l.det))} ${(r.l.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.ratio)}     ${r.ms.toFixed(2)}   | ${r.g.toFixed(3)}     ${r.k.toFixed(3)} | ${f(r.acc)}     | ${f(r.disp)}  ${f(r.cov)}${behind ? `   | land err ${r.landErr == null ? '-' : r.landErr.toFixed(2) + ' m'}  calls ${r.calls}  k3 ${r.k3.toFixed(3)}` : ''}\n`;
   agg.sh = (agg.sh || 0) + r.disp; agg.cv = (agg.cv || 0) + r.cov;
   agg.ht += r.h.truth; agg.hd += r.h.det; agg.htp += r.h.tp; agg.lt += r.l.truth; agg.ld += r.l.det; agg.ltp += r.l.tp;
 }
 txt += `ALL  | hits recall ${f(agg.htp / agg.ht)} precision ${f(agg.htp / Math.max(1, agg.hd))} | lands recall ${f(agg.ltp / agg.lt)} precision ${f(agg.ltp / Math.max(1, agg.ld))} | overlay correct ${f(agg.sh / results.length)} coverage ${f(agg.cv / results.length)}\n`;
 document.getElementById('out').textContent = txt;
+if (window.__fp) txt += '\nfalse events:\n' + window.__fp.join('\n');
 window.benchDone = { txt, results };
 </script>
 </body>

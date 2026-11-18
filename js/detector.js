@@ -110,6 +110,9 @@ export class MotionDetector {
     }
     const o1 = this.s1.dy * W + this.s1.dx, o2 = this.s2.dy * W + this.s2.dx;
     const { act, cw } = this;
+    // where the physics predicts the shuttle with confidence, look harder:
+    // lower threshold and ignore the busy-background penalty
+    const fc = roi && roi.focus, fr2 = fc ? fc.r * fc.r : 0;
     const full = !roi || ((x1 - x0) * (y1 - y0) > 0.9 * W * H);
     if (x1 - x0 < 3 || y1 - y0 < 3) return { cands: [], masses: [], roi: { x0, y0, x1, y1 }, full };
 
@@ -137,6 +140,7 @@ export class MotionDetector {
       let i = y * W + x0;
       const arow = ((y / CS) | 0) * cw;
       for (let x = x0; x < x1; x++, i++) {
+        if (fc && diff[i] >= 0.65 * T && (x - fc.x) * (x - fc.x) + (y - fc.y) * (y - fc.y) < fr2) { mask[i] = 1; continue; }
         if (diff[i] < T) continue;
         over++;
         this.dense[arow + ((x / CS) | 0)]++;
@@ -238,6 +242,6 @@ export class MotionDetector {
       cands.sort((a, b) => b.strength * (1 - b.act) - a.strength * (1 - a.act));
       cands.length = 64;
     }
-    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1 };
+    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1, gray: g0 };
   }
 }

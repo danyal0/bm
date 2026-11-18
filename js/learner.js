@@ -35,6 +35,11 @@ function defaults() {
     stats: { videos: 0, sessions: 0, frames: 0, processed: 0, tracks: 0, hits: 0, lands: 0, labels: 0, fits: 0 },
     // g in frame-heights/s^2, k in 1/frame-height
     physics: { g: 1.2, k: 1.8, n: 0 },
+    // true 3D drag of the shuttles you play with (1/m); terminal velocity = √(9.81/k)
+    physics3d: { k: 0.21, n: 0 },
+    // saved court calibrations (the camera is usually in the same place)
+    cameras: [],
+    lines: 'singles',
     detector: { w: INIT_W.slice(), areaMu: Math.log(8), areaVar: 1.2, threshMult: 3.2, pos: 0.5 },
     // err[s] = EMA of |prediction - measurement| / frameHeight after a stride of s frames
     skip: { err: [0, 0.002, 0.003, 0.0045, 0.0065, 0.009, 0.012, 0.016, 0.021], n: [0, 0, 0, 0, 0, 0, 0, 0, 0], tol: 0.008 },
@@ -51,7 +56,7 @@ function merge(base, src) {
     if (!(k in src)) continue;
     const b = base[k], s = src[k];
     if (Array.isArray(b)) {
-      if (Array.isArray(s) && (k === 'history' || s.length === b.length)) base[k] = s;
+      if (Array.isArray(s) && (k === 'history' || k === 'cameras' || s.length === b.length)) base[k] = s;
     } else if (b && typeof b === 'object') merge(b, s);
     else if (typeof s === typeof b) base[k] = s;
   }
@@ -184,6 +189,31 @@ export class Brain {
     p.n++;
     this.data.stats.fits++;
     this.dirty = true;
+  }
+
+  physics3dObserve(k, w) {
+    if (!this.learning) return;
+    const p = this.data.physics3d;
+    p.k += w * (k - p.k);
+    p.k = Math.min(0.5, Math.max(0.08, p.k));
+    p.n++;
+    this.dirty = true;
+  }
+
+  saveCamera(json) {
+    const c = this.data.cameras.filter(x => !(x.vw === json.vw && x.vh === json.vh));
+    c.unshift({ ...json, saved: Date.now() });
+    this.data.cameras = c.slice(0, 5);
+    this.dirty = true;
+    this.save(true);
+  }
+
+  cameraFor(vw, vh) {
+    const ar = vw / vh;
+    const c = this.data.cameras.find(x => Math.abs(x.vw / x.vh - ar) < 0.02);
+    if (!c) return null;
+    const s = vw / c.vw; // same framing at a different resolution: scale the focal length
+    return { ...c, theta: [c.theta[0] * s, ...c.theta.slice(1)], vw, vh };
   }
 
   // ---------- skip policy ----------

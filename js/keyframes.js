@@ -57,7 +57,7 @@ export class KeyframeStore {
     ctx.beginPath(); ctx.arc(e.x * sx, e.y * sy, 14, 0, 7); ctx.stroke();
     ctx.beginPath(); ctx.arc(e.x * sx, e.y * sy, 3, 0, 7); ctx.fillStyle = col; ctx.fill();
 
-    const label = e.type === 'hit' ? 'HIT' : e.type === 'land' ? 'GROUND' : 'DEFLECT';
+    const label = e.type === 'hit' ? 'HIT' : e.type === 'land' ? (e.in == null ? 'GROUND' : e.in ? 'IN' : 'OUT') : 'DEFLECT';
     const item = {
       e, canvas: c, label, frameT: best.t,
       text: `${label} · ${fmtT(e.t)}${e.kmh ? ` · ${Math.round(e.kmh)} km/h` : ''}${e.angle ? ` · ${Math.round(e.angle)}°` : ''}`,
@@ -67,7 +67,8 @@ export class KeyframeStore {
     fig.className = `kf kf-${e.type}`;
     c.className = 'kf-img';
     const cap = document.createElement('figcaption');
-    cap.innerHTML = `<b>${label}</b><span>${fmtT(e.t)}${e.kmh ? ` · ${Math.round(e.kmh)} km/h` : ''}</span>`;
+    const extra = e.world ? (e.type === 'hit' ? ` · ${e.world[2].toFixed(1)} m high` : ` · ${e.world[0].toFixed(1)}, ${e.world[1].toFixed(1)} m`) : '';
+    cap.innerHTML = `<b>${label}</b><span>${fmtT(e.t)}${e.kmh ? ` · ${Math.round(e.kmh)} km/h` : ''}${extra}</span>`;
     fig.append(c, cap);
     fig.addEventListener('click', () => this.onOpen(item));
     this.gallery.prepend(fig);
