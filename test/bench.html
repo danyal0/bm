@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ShuttleVision bench</title>
+<style>body{font:13px ui-monospace,monospace;background:#0a0d14;color:#e8edf5;padding:16px}pre{white-space:pre-wrap}</style></head>
+<body>
+<h1>Deterministic benchmark</h1>
+<p>Seeded synthetic rallies at a fixed 60 fps through the real detector → tracker pipeline. Query: <code>?seeds=1,2,3&amp;secs=90&amp;quality=0</code></p>
+<pre id="out">running…</pre>
+<script type="module">
+// seeded RNG so every run is identical
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const q = new URLSearchParams(location.search);
+const seeds = (q.get('seeds') || '1,2,3').split(',').map(Number);
+const secs = +(q.get('secs') || 90);
+const quality = q.get('quality') === '1';
+const fps = +(q.get('fps') || 60);
+const { Brain } = await import('../js/learner.js');
+const { MotionDetector } = await import('../js/detector.js');
+const { Tracker } = await import('../js/tracker.js');
+const { DemoRally } = await import('../js/demo.js');
+
+function score(truth, det, tol = 0.1) {
+  const used = new Set(); let tp = 0, dts = [];
+  for (const d of det) {
+    let bi = -1, bd = tol;
+    truth.forEach((g, i) => { const dd = Math.abs(g.t - d.t); if (!used.has(i) && dd < bd) { bd = dd; bi = i; } });
+    if (bi >= 0) { used.add(bi); tp++; dts.push(Math.abs(d.t - truth[bi].t)); }
+  }
+  return { truth: truth.length, det: det.length, tp, mdt: dts.length ? dts.reduce((a, b) => a + b, 0) / dts.length : 0 };
+}
+
+const results = [];
+const brain = new Brain({ persist: false });   // one brain learns across all seeds (like several videos)
+for (const seed of seeds) {
+  Math.random = mulberry32(seed);
+  const demo = new DemoRally();
+  demo.simClock = true;
+  const det = new MotionDetector();
+  const tracker = new Tracker(brain);
+  det.configure(demo.w, demo.h, 480);
+  tracker.setGeometry(det.W, det.H);
+  tracker.dt = 1 / fps;
+  brain.beginSession('bench', 'seed ' + seed);
+  const events = [];
+  let processed = 0, ms = 0;
+  const N = Math.round(secs * fps);
+  for (let i = 1; i <= N; i++) {
+    demo.step(1 / fps); demo.draw();
+    const t = demo.time;
+    const zones = tracker.zones(t);
+    const t0 = performance.now();
+    if (tracker.shouldProcess(i, t, zones, quality)) {
+      det.grab(demo.c);
+      if (det.ready()) {
+        const d = det.detect(tracker.roi(t, zones), brain.data.detector.threshMult);
+        for (const e of tracker.process(i, t, d, zones)) events.push(e);
+        brain.tuneThreshold(d.cands.length, d.full, !!tracker.track, !!(tracker.track && tracker.track.misses > 0));
+      }
+      processed++;
+    } else tracker.tickSkipped(t);
+    ms += performance.now() - t0;
+    brain.countFrame(true);
+  }
+  const hitsT = demo.log.filter(e => e.type === 'hit' && !e.serve), landsT = demo.log.filter(e => e.type === 'land');
+  const h = score(hitsT, events.filter(e => e.type === 'hit' || e.type === 'deflect'));
+  const l = score(landsT, events.filter(e => e.type === 'land'));
+  const s = brain.session;
+  results.push({ seed, h, l, ratio: processed / N, ms: ms / N, g: tracker.phys.g, k: tracker.phys.k, acc: s.labels ? s.correct / s.labels : 0, tracks: s.tracks });
+  results[results.length - 1].brain = JSON.stringify({ w: brain.data.detector.w.map(x => +x.toFixed(2)), mu: +brain.data.detector.areaMu.toFixed(2), v: +brain.data.detector.areaVar.toFixed(2), thr: +brain.data.detector.threshMult.toFixed(2), g: +brain.data.physics.g.toFixed(3), k: +brain.data.physics.k.toFixed(3), skip: brain.data.skip.err.map(x => +x.toFixed(4)), heatMax: +brain.data.heatMax.toFixed(0), floor: tracker.floorEstimate() && +tracker.floorEstimate().toFixed(0), q: +tracker.qScale.toFixed(2) });
+  brain.endSession(true);
+}
+const f = x => (x * 100).toFixed(0).padStart(3) + '%';
+let txt = 'seed | hits rec  prec  Δt   | lands rec  prec  Δt   | analysed  ms/frame | g (1.090)  k (1.908) | det-agree\n';
+const agg = { ht: 0, hd: 0, htp: 0, lt: 0, ld: 0, ltp: 0 };
+for (const r of results) {
+  txt += `${String(r.seed).padStart(4)} | ${f(r.h.tp / Math.max(1, r.h.truth))} ${f(r.h.tp / Math.max(1, r.h.det))} ${(r.h.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.l.tp / Math.max(1, r.l.truth))} ${f(r.l.tp / Math.max(1, r.l.det))} ${(r.l.mdt * 1000).toFixed(0).padStart(3)}ms | ${f(r.ratio)}     ${r.ms.toFixed(2)}   | ${r.g.toFixed(3)}     ${r.k.toFixed(3)} | ${f(r.acc)}\n`;
+  txt += '       ' + r.brain + '\n';
+  agg.ht += r.h.truth; agg.hd += r.h.det; agg.htp += r.h.tp; agg.lt += r.l.truth; agg.ld += r.l.det; agg.ltp += r.l.tp;
+}
+txt += `ALL  | hits recall ${f(agg.htp / agg.ht)} precision ${f(agg.htp / Math.max(1, agg.hd))} | lands recall ${f(agg.ltp / agg.lt)} precision ${f(agg.ltp / Math.max(1, agg.ld))}\n`;
+document.getElementById('out').textContent = txt;
+window.benchDone = { txt, results };
+</script>
+</body>
+</html>

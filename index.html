@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0d14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>ShuttleVision</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='40' cy='40' r='10' fill='%23d6ff3d'/%3E%3Cpath d='M33 33 10 10M38 30 22 6M30 38 6 22' stroke='%23d6ff3d' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" width="26" height="26" aria-hidden="true"><circle cx="40" cy="40" r="10" fill="currentColor"/><path d="M33 33 10 10M38 30 22 6M30 38 6 22" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+      <span>ShuttleVision</span>
+    </div>
+    <div class="chip" id="brainChip" title="Self-learning model">brain · 0 videos</div>
+  </header>
+
+  <main>
+    <section class="stage" id="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud" id="hud" hidden>
+        <div class="hud-mode"><span id="hMode" class="mode">SEARCH</span><span id="hStride"></span></div>
+        <div class="hud-grid">
+          <span>fps</span><b id="hFps">–</b>
+          <span>analysed</span><b id="hRatio">–</b>
+          <span>cost</span><b id="hMs">–</b>
+          <span>shuttle</span><b id="hSpeed">–</b>
+          <span>last shot</span><b id="hShot">–</b>
+          <span>shots</span><b id="hShots">0</b>
+        </div>
+      </div>
+      <div class="empty" id="empty">
+        <h1>Real‑time shuttle &amp; player tracking</h1>
+        <p>Physics‑guided, self‑learning. Pick a source to start.</p>
+        <div class="empty-actions">
+          <button class="btn primary" data-act="camera">Live camera</button>
+          <button class="btn" data-act="upload">Upload video</button>
+          <button class="btn ghost" data-act="demo">Demo rally</button>
+        </div>
+      </div>
+      <div class="toast" id="toast" hidden></div>
+      <div class="queue" id="queueBar" hidden><span id="queueText"></span><i id="queueProg"></i></div>
+    </section>
+
+    <section class="bar">
+      <div class="row sources">
+        <button class="btn primary" data-act="camera" title="Rear camera, highest frame rate available">📷 Camera</button>
+        <button class="btn" data-act="upload">⬆ Video</button>
+        <button class="btn" data-act="train" title="Pick several videos – it learns from each one in turn">🎓 Train on videos</button>
+        <button class="btn ghost" data-act="demo">▶ Demo</button>
+        <span class="spacer"></span>
+        <button class="btn icon" id="btnPlay" data-act="play" disabled title="Play / pause">⏯</button>
+        <button class="btn icon" data-act="stop" title="Stop">■</button>
+      </div>
+      <input type="range" id="seek" min="0" max="1000" value="0" step="1" hidden aria-label="Seek">
+      <div class="row toggles">
+        <label class="tog"><input type="checkbox" id="optSkeleton" checked><span>Skeleton</span></label>
+        <label class="tog"><input type="checkbox" id="optTrail" checked><span>Trail</span></label>
+        <label class="tog"><input type="checkbox" id="optPredict" checked><span>Prediction</span></label>
+        <label class="tog"><input type="checkbox" id="optLearn" checked><span>Learn</span></label>
+        <label class="tog"><input type="checkbox" id="optQuality"><span>Every frame</span></label>
+        <label class="tog"><input type="checkbox" id="optDebug"><span>Debug</span></label>
+        <label class="sel">Res
+          <select id="optRes"><option value="320">320</option><option value="480" selected>480</option><option value="640">640</option><option value="800">800</option></select>
+        </label>
+        <label class="sel">Players
+          <select id="optPlayers"><option value="0">off</option><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select>
+        </label>
+        <label class="sel">Speed
+          <select id="optRate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Key moments <small>only contact &amp; ground frames are kept</small></h2>
+        <button class="btn small ghost" id="btnClearKF">Clear</button>
+      </div>
+      <div class="strip" id="gallery"><p class="hint" id="kfHint">Hits, ground contacts and deflections appear here.</p></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Brain <small>persists in this browser · improves with every video</small></h2>
+        <div class="row tight">
+          <button class="btn small" id="btnExport">Export</button>
+          <button class="btn small" id="btnImport">Import</button>
+          <button class="btn small danger" id="btnReset">Reset</button>
+        </div>
+      </div>
+      <div class="brain">
+        <div class="stats" id="bStats"></div>
+        <div class="card">
+          <h3>Learned physics</h3>
+          <div class="kv" id="bPhys"></div>
+        </div>
+        <div class="card">
+          <h3>Frame-skip policy <small>error after skipping s frames</small></h3>
+          <canvas id="bSkip" height="110"></canvas>
+        </div>
+        <div class="card">
+          <h3>Detector weights</h3>
+          <canvas id="bWeights" height="150"></canvas>
+        </div>
+        <div class="card wide">
+          <h3>Learning curve <small>per session</small></h3>
+          <canvas id="bCurve" height="120"></canvas>
+          <div class="legend"><i class="l1"></i>detector agreement <i class="l2"></i>frames analysed <i class="l3"></i>skip error</div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Camera needs HTTPS (or localhost). On iPhone use Safari; for 120–240 fps, record in Slo‑mo and upload.
+    </footer>
+  </main>
+
+  <input type="file" id="fileOne" accept="video/*" hidden>
+  <input type="file" id="fileMany" accept="video/*" multiple hidden>
+  <input type="file" id="fileBrain" accept="application/json,.json" hidden>
+
+  <dialog id="viewer">
+    <div class="viewer-body">
+      <canvas id="viewerCanvas"></canvas>
+      <div class="viewer-meta" id="viewerMeta"></div>
+      <div class="row">
+        <button class="btn" id="vJump">Jump to moment</button>
+        <button class="btn" id="vSave">Save PNG</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="vClose">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
