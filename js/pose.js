@@ -11,8 +11,14 @@ export const BONES = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
   [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [15, 19], [16, 20],
 ];
-// bones used for the "blob lies on the body" test (no forearms: rackets live there)
-const BODY = [[11, 12], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [11, 13], [12, 14]];
+// Body mask used to tell "moving shuttle" from "moving player": every limb
+// and the head. Only the racket head (beyond the wrist) stays open, because
+// that's where the shuttle legitimately touches the player.
+const BODY = [[11, 12], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32],
+  [11, 13], [12, 14], [13, 15], [14, 16], [0, 11], [0, 12]];
+
+// One-Euro filter cutoff (Hz): smooth when still, responsive when fast
+const MIN_CUT = 2.5, BETA = 8;
 
 export class PoseEngine {
   constructor() {
@@ -103,7 +109,7 @@ export class PoseEngine {
         if (d < bd) { bd = d; best = p; }
       }
       let vel = kps.map(() => ({ x: 0, y: 0 }));
-      let id;
+      let id, out = kps;
       if (best) {
         best.taken = true;
         id = best.id;
@@ -113,9 +119,17 @@ export class PoseEngine {
             x: 0.5 * best.vel[i].x + 0.5 * ((k.x - best.kps[i].x) / dt),
             y: 0.5 * best.vel[i].y + 0.5 * ((k.y - best.kps[i].y) / dt),
           }));
+          // One-Euro smoothing per keypoint: removes jitter without lag on fast moves
+          out = kps.map((k, i) => {
+            const sp = Math.hypot(vel[i].x, vel[i].y);
+            const fc = MIN_CUT + BETA * sp;
+            const a = 1 / (1 + 1 / (2 * Math.PI * fc * dt));
+            const o = best.kps[i];
+            return { x: o.x + a * (k.x - o.x), y: o.y + a * (k.y - o.y), v: k.v };
+          });
         }
       } else id = this.nextId++;
-      next.push({ id, kps, vel, c, t });
+      next.push({ id, kps: out, vel, c, t });
     }
     next.sort((a, b) => a.c.x - b.c.x);
     this.players = next;
@@ -125,8 +139,11 @@ export class PoseEngine {
   playersAt(t, W, H) {
     const out = [];
     for (const p of this.players) {
-      const dt = Math.max(0, Math.min(0.25, t - p.t));
-      const k = p.kps.map((q, i) => ({ x: (q.x + p.vel[i].x * dt * 0.8) * W, y: (q.y + p.vel[i].y * dt * 0.8) * H, v: q.v }));
+      const age = t - p.t;
+      if (age > 1.0) continue;                         // too old to trust at all
+      // short, damped extrapolation only — long extrapolation is what made skeletons drift
+      const dt = Math.max(0, Math.min(0.06, age));
+      const k = p.kps.map((q, i) => ({ x: (q.x + p.vel[i].x * dt * 0.7) * W, y: (q.y + p.vel[i].y * dt * 0.7) * H, v: q.v }));
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const q of k) if (q.v > 0.3) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
       if (!isFinite(x0)) continue;
@@ -141,7 +158,9 @@ export class PoseEngine {
       const heightPx = k[0].v > 0.5 && ankleY != null ? ankleY - k[0].y : null;
       // racket reach extends the play zone
       for (const w of wrists) { x0 = Math.min(x0, w.x); y0 = Math.min(y0, w.y); x1 = Math.max(x1, w.x); y1 = Math.max(y1, w.y); }
-      out.push({ id: p.id, kps: k, bbox: { x0, y0, x1, y1 }, wrists, bones, ankleY, heightPx });
+      // stale skeletons still mask the body (with a wider margin) but aren't drawn
+      const stale = age > 0.3;
+      out.push({ id: p.id, kps: k, bbox: { x0, y0, x1, y1 }, wrists, bones, ankleY, heightPx, stale, slack: Math.min(0.06, age * 0.15) * H });
     }
     return out;
   }

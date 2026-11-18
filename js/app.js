@@ -83,7 +83,9 @@ function onFrame(now, meta) {
     tracker.observePlayers(players);
   }
   S.players = players;
-  const zones = players.length ? players : tracker.zones(t);
+  // skeletons first (event attribution indexes them), plus motion-density zones for anyone pose missed
+  const zones = players.filter(p => !p.stale || p.slack).concat(tracker.zones(t));
+  tracker.setZones(zones);
 
   // --- shuttle: pixels only when the scheduler asks for them
   let processed = false, events = [];
@@ -115,7 +117,7 @@ function onFrame(now, meta) {
   const det = S.lastDet;
   renderer.draw({
     W, H, t,
-    est: tracker.stateAt(t),
+    est: tracker.displayState(t),
     measured: !!(tracker.track && tracker.track.lastMeas.t === t),
     trail: tracker.trail,
     path: opts.predict ? tracker.predictPath(t) : null,

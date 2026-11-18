@@ -67,6 +67,27 @@ http://localhost:8000/test/bench.html?seeds=1,2,3,4,5,6&secs=90        # add &qu
 
 Typical result: **hits about 85% recall / 94% precision** with a mean timing error of about 11 ms, and **landings about 68% / 80%**. About 55% of frames are analysed, at about 1.6 ms per frame (excluding pose). Hit recall rises from about 79% on the first rally to about 89% by the sixth. The learned `g, k` settle within a few percent of the truth. On real footage, the pose model supplies player and racket zones, which mainly helps tell hits from landings.
 
+## Real broadcast footage
+
+Broadcast and fan-cam video adds crowd motion, LED boards, camera shake, cuts, TV graphics, and players large enough to fill half the frame. Defences:
+
+- **Camera-motion compensation.** The global shift is matched on row and column brightness profiles, and frames are differenced *aligned*. Scene cuts reset tracking.
+- **Background-activity map.** Cells that keep producing small blobs (crowd, LED boards) get a higher threshold and a learned *busy background* feature.
+- **Player masks.** The skeletons (every limb plus the head, smoothed with a One-Euro filter, never extrapolated more than 60 ms) and motion-density clusters (big bodies re-assembled from many small blobs) mark where the players are. A blob on a body is accepted only if it fits the current flight tightly. It can never start a track or a new trajectory, and a track that mostly sits on a body can't be verified, drawn, or produce events. Only the racket head stays open, because that's where the shuttle touches the player.
+- **Only confident, physics-verified tracks are drawn.** Uncertain hypotheses are still followed internally but not drawn.
+
+The *broadcast* synthetic benchmark (`bench.html?broadcast=1`) went from 16% to 98% of drawn markers being correct after these changes.
+
+### Tuning on your own video
+
+`test/run-video.mjs` runs the same detector and tracker on any video file through ffmpeg. It runs without pose, faster than real time, and writes an annotated video and a JSON dump:
+
+```bash
+node test/run-video.mjs match.mp4 --start 88 --secs 30 --res 640 --out annotated.mp4 --dump shown.json --brain brain.json
+```
+
+Passing `--brain` loads and saves the learned brain, so you can pre-train on many clips and import the JSON into the app.
+
 ## Tips
 
 - Use a fixed camera, e.g. on a tripod behind the baseline or side-on. Handheld shake raises the motion threshold.

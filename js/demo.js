@@ -137,6 +137,16 @@ export class DemoRally {
 
   draw() {
     const { ctx, w, h } = this;
+    ctx.save();
+    if (this.broadcast) {
+      // handheld-ish broadcast camera: slow drift + small shake, occasional re-framing
+      this.cam = this.cam || { x: 0, y: 0, vx: 0, vy: 0, next: 8 };
+      const c = this.cam;
+      c.vx += (Math.random() - 0.5) * 0.6 - c.x * 0.02; c.vy += (Math.random() - 0.5) * 0.6 - c.y * 0.02;
+      c.vx *= 0.9; c.vy *= 0.9; c.x += c.vx; c.y += c.vy;
+      if (this.time > c.next) { c.x += (Math.random() - 0.5) * 30; c.next = this.time + 6 + Math.random() * 8; }
+      ctx.translate(c.x, c.y);
+    }
     const bg = ctx.createLinearGradient(0, 0, 0, h);
     bg.addColorStop(0, '#0b1726'); bg.addColorStop(1, '#13283a');
     ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
@@ -152,6 +162,7 @@ export class DemoRally {
     ctx.fillStyle = '#ccc'; ctx.fillRect(this.sx(NET_X) - 2, this.sy(NET_H) - 4, 4, NET_H * this.ppm + 4);
     ctx.fillStyle = 'rgba(220,220,220,.25)'; ctx.fillRect(this.sx(NET_X) - 1, this.sy(NET_H), 2, 0.76 * this.ppm);
     ctx.fillStyle = '#fff'; ctx.fillRect(this.sx(NET_X) - 3, this.sy(NET_H) - 3, 6, 4);
+    if (this.broadcast) this.drawBroadcast();
     for (const p of this.players) this.drawPlayer(p);
     const sh = this.sh;
     if (sh) {
@@ -166,6 +177,40 @@ export class DemoRally {
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+    if (this.broadcast) {
+      // sensor noise + static TV graphics (score bug with a ticking clock)
+      for (let i = 0; i < 400; i++) {
+        const v = Math.random() < 0.5 ? 0 : 255;
+        ctx.fillStyle = `rgba(${v},${v},${v},0.25)`;
+        ctx.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+      }
+      ctx.fillStyle = 'rgba(10,20,60,.85)'; ctx.fillRect(20, h - 52, 210, 36);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif';
+      ctx.fillText(`LEE 15  KAS 12   ${Math.floor(this.time / 60)}:${String(Math.floor(this.time % 60)).padStart(2, '0')}`, 30, h - 28);
+    }
+  }
+
+  // flickering crowd, LED advertising boards, moving umpire/line judges
+  drawBroadcast() {
+    const { ctx, w } = this;
+    for (let i = 0; i < 260; i++) {                       // crowd: heads that bob and shift
+      const cx = (i * 37.3) % w, cy = 40 + ((i * 53) % 120);
+      const jx = (Math.random() - 0.5) * 3, jy = (Math.random() - 0.5) * 3;
+      ctx.fillStyle = `hsl(${(i * 47) % 360},${30 + (i % 40)}%,${35 + ((i * 13) % 40) + (Math.random() < 0.03 ? 40 : 0)}%)`;
+      ctx.beginPath(); ctx.arc(cx + jx, cy + jy, 4, 0, 7); ctx.fill();
+    }
+    const by = this.gy - 46;                               // LED boards with scrolling bright text
+    ctx.fillStyle = '#071a3a'; ctx.fillRect(0, by, w, 30);
+    ctx.fillStyle = Math.floor(this.time * 2) % 2 ? '#ffe14d' : '#ffffff';
+    ctx.font = 'bold 20px sans-serif';
+    const off = -((this.time * 140) % 400);
+    for (let x = off; x < w; x += 400) ctx.fillText('YONEX  DENMARK OPEN', x, by + 22);
+    for (let i = 0; i < 3; i++) {                          // line judges fidgeting
+      const lx = 40 + i * 440 + Math.sin(this.time * 1.7 + i) * 3;
+      ctx.fillStyle = '#2b3550'; ctx.fillRect(lx, this.gy - 70, 16, 70);
+      ctx.beginPath(); ctx.arc(lx + 8, this.gy - 78, 8, 0, 7); ctx.fillStyle = '#c99a7a'; ctx.fill();
     }
   }
 

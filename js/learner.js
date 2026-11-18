@@ -15,17 +15,17 @@
 //                 learns how many frames can safely be replaced by equations.
 //  6. Threshold – motion threshold multiplier auto-tuned to scene noise.
 
-export const NF = 10;
+export const NF = 11;
 export const FEATURE_NAMES = [
   'bias', 'size prior', 'brightness', 'whiteness', 'streak',
-  'motion', 'compact', 'heat prior', 'on body', 'in big blob',
+  'motion', 'compact', 'heat prior', 'on body', 'in big blob', 'busy background',
 ];
-const INIT_W = [-1.4, 0.9, 1.1, 0.9, 0.3, 1.6, 0.4, 0.5, -2.4, -1.3];
+const INIT_W = [-1.4, 0.9, 1.1, 0.9, 0.3, 1.6, 0.4, 0.5, -2.4, -1.3, -4];
 // physically sensible bounds: e.g. motion can never become evidence *against* a shuttle
-const W_MIN = [-4, 0, -1, -1, -1.5, 0.5, -1, 0, -5, -5];
-const W_MAX = [1, 2.5, 3, 3, 1.5, 4, 2, 0.8, 0, 0];
+const W_MIN = [-4, 0, -1, -1, -1.5, 0.5, -1, 0, -5, -5, -8];
+const W_MAX = [1, 2.5, 3, 3, 1.5, 4, 2, 0.8, 0, 0, 0];
 export const GX = 32, GY = 18;
-const KEY = 'shuttlevision.brain.v1';
+const KEY = 'shuttlevision.brain.v2';
 
 function defaults() {
   return {

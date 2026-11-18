@@ -113,11 +113,14 @@ export class Tracker {
   onBody(x, y, players) {
     const H = this.H;
     for (const p of players) {
-      const b = p.bbox;
-      if (x < b.x0 || x > b.x1 || y < b.y0 || y > b.y1 || !p.bones.length) continue;
+      const b = p.bbox, m = 0.03 * H + (p.slack || 0);
+      if (x < b.x0 - m || x > b.x1 + m || y < b.y0 - m || y > b.y1 + m || !p.bones.length) continue;
       let dmin = Infinity;
       for (const s of p.bones) dmin = Math.min(dmin, segDist(x, y, s[0], s[1], s[2], s[3]));
-      if (dmin < 0.03 * H && this.wristDist(x, y, [p]) > 0.07 * H) return true;
+      // limb thickness grows with the player's size and with pose staleness;
+      // the racket head (beyond the wrist) is the only place a shuttle may touch
+      const thick = Math.max(0.025 * H, 0.06 * (p.heightPx || 0.4 * H)) + (p.slack || 0);
+      if (dmin < thick && this.wristDist(x, y, [p]) > 0.05 * H) return true;
     }
     return false;
   }
@@ -169,7 +172,7 @@ export class Tracker {
   // ---------------------------------------------------------------- features
   features(c, players, masses) {
     const d = this.brain.data.detector, H = this.H, W = this.W;
-    const f = new Float32Array(10);
+    const f = new Float32Array(11);
     f[0] = 1;
     const z = (Math.log(Math.max(1, c.area)) - d.areaMu) / Math.sqrt(d.areaVar);
     f[1] = -0.5 * Math.min(z * z, 9);
@@ -183,6 +186,7 @@ export class Tracker {
     let inMass = 0;
     for (const m of masses) if (c.x > m.x0 - 2 && c.x < m.x1 + 2 && c.y > m.y0 - 2 && c.y < m.y1 + 2) { inMass = 1; break; }
     f[9] = inMass;
+    f[10] = Math.min(1, c.act || 0);
     return f;
   }
 
@@ -246,6 +250,12 @@ export class Tracker {
     const gap = idx - this.lastProcIdx;
     const mode = this.mode;
     this.lastProcIdx = idx;
+    if (det.cut) {                       // scene cut: nothing carries over
+      this.track = null; this.tents = []; this.trail.length = 0; this.plannedStride = 1; this.lastEnded = null;
+      this.mode = 'SEARCH';
+      return [];
+    }
+    if (det.shift && (det.shift.dx || det.shift.dy)) this.applyCameraShift(-det.shift.dx, -det.shift.dy);
     this.hasPose = players.some(p => p.kps);
     if (det.full) {
       this.lastMasses = det.masses;
@@ -270,7 +280,7 @@ export class Tracker {
     const tr = this.track;
     if (tr) {
       const s = tr.ekf.s;
-      this.pushTrail(t, s[0], s[1], Math.hypot(s[2], s[3]), tr.lastMeas.t === t, tr.id);
+      this.pushTrail(t, s[0], s[1], Math.hypot(s[2], s[3]), tr.lastMeas.t === t, tr.id, !!this.displayState(t));
     }
     for (const e of ev) {
       e.kmh = e.vout != null ? this.toKmh(e.vout) : (e.vin != null ? this.toKmh(e.vin) : null);
@@ -286,23 +296,59 @@ export class Tracker {
     return ev;
   }
 
+  // the camera moved by (dx, dy): everything we remember moves with the image
+  applyCameraShift(dx, dy) {
+    const mv = o => { if (o) { o.x += dx; o.y += dy; } };
+    const tr = this.track;
+    if (tr) {
+      tr.ekf.s[0] += dx; tr.ekf.s[1] += dy;
+      const seen = new Set();
+      const mvOnce = m => { if (m && !seen.has(m)) { seen.add(m); mv(m); } };
+      tr.segment.forEach(mvOnce); tr.hist.forEach(mvOnce);
+      if (tr.pending) {
+        tr.pending.prevSegment.forEach(mvOnce); mvOnce(tr.pending.turn);
+        tr.pending.snapshot.s[0] += dx; tr.pending.snapshot.s[1] += dy;
+      }
+      if (tr.lastState) { tr.lastState.s = Float64Array.from(tr.lastState.s); tr.lastState.s[0] += dx; tr.lastState.s[1] += dy; }
+    }
+    for (const T of this.tents) for (const p of T.pts) mv(p);
+    for (const p of this.trail) mv(p);
+    for (const m of this.massMem) { m.x0 += dx; m.x1 += dx; m.y0 += dy; m.y1 += dy; }
+  }
+
+  // What the overlay may show: only physics-verified, fresh tracks.
+  // (Unverified "maybe" tracks are still followed internally, just not drawn.)
+  displayState(t) {
+    const tr = this.track;
+    if (!tr || !tr.verified || tr.pending) return null;
+    if ((tr.conf ?? 1) < 0.5 || (tr.onP ?? 0) > 0.4) return null;   // weak or body-bound: don't draw
+    const s = this.stateAt(t);
+    const stale = t - tr.lastMeas.t;
+    if (stale > 0.2 && !(s[1] < 0)) return null;
+    // coasting through a player: don't paint a marker on their body
+    if (stale > 1.5 * this.dt && this.nearPlayer(s[0], s[1], this.zoneCache || [], 0) >= 0) return null;
+    return s;
+  }
+
   // player zones when no skeletons are available: motion masses seen in the last 0.5 s
   zones(t) {
     this.massMem = this.massMem.filter(m => t - m.t < 0.5 && m.t <= t + 0.01);
     return this.massMem.map(m => ({ bbox: m, wrists: [], bones: [] }));
   }
 
+  setZones(z) { this.zoneCache = z; }
+
   tickSkipped(t) {
     const s = this.stateAt(t);
-    if (s) this.pushTrail(t, s[0], s[1], Math.hypot(s[2], s[3]), false, this.track.id);
+    if (s) this.pushTrail(t, s[0], s[1], Math.hypot(s[2], s[3]), false, this.track.id, !!this.displayState(t));
   }
 
-  pushTrail(t, x, y, sp, m, id) {
+  pushTrail(t, x, y, sp, m, id, v) {
     const tr = this.trail;
     if (tr.length && t <= tr[tr.length - 1].t) {
       if (t < tr[tr.length - 1].t - 0.05) tr.length = 0; else return;
     }
-    tr.push({ t, x, y, sp, m, id });
+    tr.push({ t, x, y, sp, m, id, v });
     while (tr.length && t - tr[0].t > 1.2) tr.shift();
   }
 
@@ -330,6 +376,8 @@ export class Tracker {
       if (ap > 4) continue; // > ~3.3× size change: a different object
       const d2 = e.mahal(c.x, c.y, this.measVar(c));
       if (d2 > GATE) continue;
+      // blobs on a player's body (legs, shoes, shirt) only count if they fit the flight tightly
+      if (onPlayer(c) && d2 > 4) continue;
       const v = Math.log(c.p + 1e-4) - 0.5 * d2 - ap;
       if (v > bestV) { bestV = v; best = c; bestD2 = d2; }
     }
@@ -402,6 +450,9 @@ export class Tracker {
     tr.lastState = { s: m.s, t };
     const la = Math.log(Math.max(1, c.area));
     tr.logA = tr.logA == null ? la : tr.logA + 0.2 * (la - tr.logA);
+    // running evidence: how confident, and how much of it lies on a player's body
+    tr.conf = tr.conf == null ? (c.p || 0) : tr.conf + 0.25 * ((c.p || 0) - tr.conf);
+    tr.onP = tr.onP == null ? (onPlayer(c) ? 1 : 0) : tr.onP + 0.25 * ((onPlayer(c) ? 1 : 0) - tr.onP);
     if (tr.verified && !tr.pending) {
       this.brain.addHeat(c.x / this.W, c.y / this.H);
       this.brain.observeArea(c.area);
@@ -428,7 +479,7 @@ export class Tracker {
     const pmin = zone ? 0.3 : 0.6;
     let best = null, bv = -Infinity;
     for (const c of cands) {
-      if (c.p < pmin) continue;
+      if (c.p < pmin || onPlayer(c)) continue;
       const ap = this.areaPenalty(c, tr.logA);
       if (ap > 3) continue;
       const d = Math.hypot(c.x - lm.x, c.y - lm.y);
@@ -500,6 +551,7 @@ export class Tracker {
   }
 
   pushEvent(tr, ev, c, players) {
+    if (tr && ((tr.onP ?? 0) > 0.5 || (tr.conf ?? 1) < 0.3)) return null;
     const { type, player } = this.classify(c, players);
     const last = tr ? tr.lastEvent : null;
     if (last && Math.abs(c.tau - last.t) < 0.15) return null;      // same contact
@@ -513,6 +565,7 @@ export class Tracker {
   confirmManeuver(tr, ev, players) {
     const p = tr.pending;
     tr.pending = null;
+    if (!tr.verified) return;
     const e = tr.ekf;
     const c = this.solveContact(p.oldState, { s: e.s, t: tr.t }, e.g, e.k, p.turn.t - this.dt, p.firstT);
     this.fitSegment(p.prevSegment);
@@ -544,7 +597,7 @@ export class Tracker {
     this.tents = [];
     this.plannedStride = 1;
     if (tr.pending) { tr.segment = tr.pending.prevSegment; tr.lastMeas = tr.pending.turn; tr.lastState = tr.pending.oldState; }
-    if (!tr.verified && !tr.lastEvent && tr.nMeas < 6) return; // too short to judge either way
+    if (!tr.verified) return; // never physics-confirmed: no events from it
     this.fitSegment(tr.segment);
     const lm = tr.lastMeas, ls = tr.lastState;
     this.lastEnded = { s: ls.s, t: ls.t, lastEvent: null };
@@ -608,7 +661,7 @@ export class Tracker {
     this.rejects = this.rejects.filter(r => t - r.t < 1.0 && t >= r.t);
     const rr = 0.06 * H;
     const rejected = c => this.rejects.some(r => Math.abs(c.x - r.x) < rr && Math.abs(c.y - r.y) < rr);
-    const seeds = cands.filter(c => c.p >= 0.2 && !rejected(c)).sort((a, b) => b.p - a.p).slice(0, 12);
+    const seeds = cands.filter(c => c.p >= 0.2 && !rejected(c) && !onPlayer(c)).sort((a, b) => b.p - a.p).slice(0, 12);
     for (const c of seeds) next.push({ pts: [{ t, x: c.x, y: c.y, p: c.p, f: c.f, area: c.area, w: c.w, h: c.h }] });
 
     let bestT = null, bestS = -Infinity;
@@ -643,6 +696,8 @@ export class Tracker {
       nMeas: 3, misses: 0, hist: pts.slice(), segment: pts.slice(), pending: null, start: p2.t, lastEvent: null,
       id: ++this.trackId, verified: false, strikes: 0, link,
       logA: pts.reduce((a, p) => a + Math.log(Math.max(1, p.area)), 0) / 3,
+      conf: pts.reduce((a, p) => a + (p.p || 0), 0) / 3,
+      onP: pts.reduce((a, p) => a + (onPlayer(p) ? 1 : 0), 0) / 3,
     };
     this.tents = [];
     this.brain.countEvent('track');
@@ -654,8 +709,9 @@ export class Tracker {
   // feet move smoothly but not ballistically → rejected, and their points are
   // fed back to the detector as negatives.
   validate(tr, t, ev, players) {
-    const ok = this.ballistic(tr.segment, tr.ekf);
+    let ok = this.ballistic(tr.segment, tr.ekf);
     if (ok === null) return true;
+    if (ok && tr.onP > 0.3) ok = false;          // a shuttle doesn't ride on a player's body
     if (ok) {
       if (!tr.verified) { tr.verified = true; this.linkEvent(tr, ev, players); }
       tr.strikes = 0;
@@ -762,7 +818,7 @@ export class Tracker {
   // ---------------------------------------------------------------- prediction for display
   predictPath(t, horizon = 1.5) {
     const tr = this.track;
-    if (!tr) return null;
+    if (!tr || !this.displayState(t) || t - tr.lastMeas.t > 0.1) return null;
     const s = this.stateAt(t);
     const H = this.H, W = this.W;
     const f = this.floorEstimate() ?? H * 1.02;
@@ -778,6 +834,9 @@ export class Tracker {
     return { pts, landing };
   }
 }
+
+// candidate sits on a player (skeleton bone or inside a big moving blob)
+function onPlayer(c) { return !!(c.f && (c.f[8] || c.f[9])); }
 
 function consistent(p, H) {
   const d0 = p[1].t - p[0].t, d1 = p[2].t - p[1].t;

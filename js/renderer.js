@@ -65,7 +65,8 @@ export class Renderer {
     // skeletons
     if (st.opts.skeleton) {
       st.players.forEach((p, i) => {
-        const col = PLAYER_COLORS[i % PLAYER_COLORS.length];
+        if (p.stale) return; // never draw an out-of-date skeleton
+        const col = PLAYER_COLORS[(p.id - 1) % PLAYER_COLORS.length];
         const k = p.kps;
         ctx.lineCap = 'round';
         ctx.strokeStyle = col; ctx.lineWidth = 3 * u; ctx.globalAlpha = 0.9;
@@ -91,7 +92,7 @@ export class Renderer {
         const b = p.bbox;
         ctx.font = `${600} ${11 * u}px system-ui, sans-serif`;
         ctx.fillStyle = col;
-        ctx.fillText(`P${i + 1}`, X(b.x0), Y(b.y0) - 6 * u);
+        ctx.fillText(`P${p.id}`, X(b.x0), Y(b.y0) - 6 * u);
       });
     }
 
@@ -101,7 +102,7 @@ export class Renderer {
       ctx.lineCap = 'round';
       for (let i = 1; i < tr.length; i++) {
         const a = tr[i - 1], b = tr[i];
-        if (b.t - a.t > 0.3 || a.id !== b.id) continue;
+        if (b.t - a.t > 0.12 || a.id !== b.id || !a.v || !b.v) continue;
         const age = Math.max(0, Math.min(1, (tNow - b.t) / 1.0));
         ctx.globalAlpha = 1 - age;
         ctx.strokeStyle = speedColor(kmh(b.sp));
@@ -111,7 +112,7 @@ export class Renderer {
       // processed (measured) vs equation-filled samples
       for (const p of tr) {
         const age = (tNow - p.t) / 1.0;
-        if (age > 1) continue;
+        if (age > 1 || !p.v) continue;
         ctx.globalAlpha = 1 - age;
         if (p.m) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 2 * u, 0, 7); ctx.fill(); }
         else { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1 * u; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 2.2 * u, 0, 7); ctx.stroke(); }
