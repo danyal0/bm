@@ -314,7 +314,7 @@ export class Tracker {
     // ring of recent full-frame motion responses (for track-before-detect)
     if (det.diff && !det.cut && det.full) {
       this.ring = this.ring || [];
-      this.ring.push({ t, d: Uint8Array.from(det.diff) });
+      this.ring.push({ t, d: Uint8Array.from(det.bgDiff || det.diff) });
       if (this.ring.length > 8) this.ring.shift();
     } else if (!this.track) this.ring = [];
     this.grayW = this.W; this.grayH = this.H;

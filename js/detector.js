@@ -49,6 +49,7 @@ export class MotionDetector {
     this.hits = new Uint8Array(this.cw * this.ch);
     this.dense = new Uint16Array(this.cw * this.ch);
     this.cstack = new Int32Array(this.cw * this.ch);
+    this.bg = new Float32Array(n); this.bgInit = false;   // per-pixel background (slow average)
     this.cp = [new Float32Array(W), new Float32Array(W), new Float32Array(W)];
     this.rp = [new Float32Array(H), new Float32Array(H), new Float32Array(H)];
     this.s1 = { dx: 0, dy: 0 }; this.s2 = { dx: 0, dy: 0 };
@@ -94,6 +95,9 @@ export class MotionDetector {
     }
     for (let x = 0; x < W; x++) tc[x] /= H;
     this.frames++;
+    // update the background: slow average, fast start
+    if (!this.bgInit) { this.bg.set(g); this.bgInit = true; }
+    else for (let i = 0; i < g.length; i++) this.bg[i] += 0.03 * (g[i] - this.bg[i]);
     if (this.frames >= 3) {
       this.s1 = { dx: MotionDetector.match(tc, this.cp[1], W), dy: MotionDetector.match(tr, this.rp[1], H) };
       this.s2 = { dx: MotionDetector.match(tc, this.cp[2], W), dy: MotionDetector.match(tr, this.rp[2], H) };
@@ -243,6 +247,16 @@ export class MotionDetector {
       cands.sort((a, b) => b.strength * (1 - b.act) - a.strength * (1 - a.act));
       cands.length = 64;
     }
-    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1, gray: g0, diff: this.diff, thresh: T, noise: mean };
+    // background-suppressed response: a pixel that matches its long-run background
+    // (crowd, boards, stationary people) cannot be the shuttle
+    const bgR = this.bgR || (this.bgR = new Uint8Array(W * H));
+    const bg = this.bg, bgInit = this.bgInit;
+    if (full) for (let i = 0; i < g0.length; i++) {
+      const dv = g0[i] - bg[i];
+      bgR[i] = Math.min(255, (dv < 0 ? -dv : dv) * 2);
+    }
+    const suppressed = new Uint8Array(W * H);
+    if (full) for (let i = 0; i < suppressed.length; i++) suppressed[i] = Math.min(diff[i] | 0, bgR[i]);
+    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1, gray: g0, diff: this.diff, thresh: T, noise: mean, bgDiff: suppressed };
   }
 }
