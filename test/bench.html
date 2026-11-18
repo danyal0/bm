@@ -17,7 +17,8 @@ const fps = +(q.get('fps') || 60);
 const broadcast = q.get('broadcast') === '1';
 const behind = q.get('view') === 'behind';          // 3D court view from behind/above (fan-cam)
 const calib = q.get('calib') !== '0';               // give the tracker the court calibration
-const calibErr = +(q.get('calibErr') || 0);         // px of error in the tapped points (tests robustness)
+const calibErr = +(q.get('calibErr') || 0);
+const faint = +(q.get('faint') || 0);               // shuttle opacity (0 = normal)         // px of error in the tapped points (tests robustness)
 const { Brain } = await import('../js/learner.js');
 const { MotionDetector } = await import('../js/detector.js');
 const { Tracker } = await import('../js/tracker.js');
@@ -40,6 +41,8 @@ const brain = new Brain({ persist: false });   // one brain learns across all se
 for (const seed of seeds) {
   Math.random = mulberry32(seed);
   const demo = behind ? new DemoRally3D() : new DemoRally();
+  if (behind && faint) demo.faint = faint;
+  const tbdOn = q.get('tbd') !== '0';
   demo.simClock = true;
   demo.broadcast = broadcast;
   const det = new MotionDetector();
@@ -47,6 +50,7 @@ for (const seed of seeds) {
   det.configure(demo.w, demo.h, 480);
   tracker.setGeometry(det.W, det.H);
   tracker.dt = 1 / fps;
+  tracker.tbdOn = tbdOn;
   if (behind && calib) {
     // re-calibrate from "tapped" points like a user would (optionally with tap error)
     const court = [[0, 0], [6.1, 0], [0, 8.68], [6.1, 8.68], [3.05, 4.72], [3.05, 12.64], [0, 6.7, 1.55], [6.1, 6.7, 1.55]];

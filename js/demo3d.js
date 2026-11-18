@@ -208,8 +208,10 @@ export class DemoRally3D {
       const pj = cam.projectJ(x[0], x[1], Math.max(0, x[2]));
       if (!pj) return;
       const r = Math.max(0.9, 0.034 * cam.f * cam.scale / pj.depth);
+      ctx.globalAlpha = this.faint ?? 1;   // <1: a faint shuttle (dim, low contrast)
       ctx.fillStyle = '#ffffff';
       ctx.beginPath(); ctx.arc(pj.u, pj.v, r, 0, 7); ctx.fill();
+      ctx.globalAlpha = 1;
     };
     const shY = this.sh ? this.sh.x[1] : 0;
     if (shY < near.Y) { drawShuttle(); this.drawPlayer(near); } else { this.drawPlayer(near); drawShuttle(); }

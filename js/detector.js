@@ -243,6 +243,6 @@ export class MotionDetector {
       cands.sort((a, b) => b.strength * (1 - b.act) - a.strength * (1 - a.act));
       cands.length = 64;
     }
-    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1, gray: g0 };
+    return { cands, masses, roi: { x0, y0, x1, y1 }, full, shift: this.s1, gray: g0, diff: this.diff, thresh: T, noise: mean };
   }
 }

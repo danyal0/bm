@@ -309,6 +309,7 @@ export class Tracker {
     const mode = this.mode;
     this.lastProcIdx = idx;
     this.lastGray = det.gray || null;   // greyscale at processing resolution (valid this call only)
+    this.lastDiff = det.diff || null; this.lastThresh = det.thresh || 9;   // un-thresholded motion response
     this.grayW = this.W; this.grayH = this.H;
     if (det.cut) {                       // scene cut: nothing carries over
       this.track = null; this.tents = []; this.trail.length = 0; this.plannedStride = 1; this.lastEnded = null; this.pendingLands = [];
@@ -453,6 +454,19 @@ export class Tracker {
   // once a flight is confirmed, show its earlier part too
   retrofill(id) { for (const p of this.trail) if (p.id === id) p.v = true; }
 
+  // strongest un-thresholded motion response in a 5×5 window at (x, y)
+  softResponse(x, y) {
+    const D = this.lastDiff, W = this.grayW, H = this.grayH;
+    const xi = Math.round(x), yi = Math.round(y);
+    let best = { v: 0, x, y };
+    if (xi < 3 || yi < 3 || xi >= W - 3 || yi >= H - 3) return best;
+    for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) {
+      const v = D[(yi + j) * W + xi + i];
+      if (v > best.v) best = { v, x: xi + i, y: yi + j };
+    }
+    return best;
+  }
+
   // ---- template & NCC re-find -------------------------------------------
   patchAt(x, y) {
     const g = this.lastGray, W = this.grayW, H = this.grayH, n = 2 * TPL_R + 1;
@@ -591,8 +605,25 @@ export class Tracker {
       return;
     }
 
-    // ---- no consistent measurement: try the learned template re-find around the prediction
+    // ---- no consistent measurement
     if (tr.pending) this.revertManeuver(tr, t);
+    // Track-before-detect: weak motion response near the prediction, accumulated over
+    // frames. Each frame adds evidence only if it is above the noise threshold; a real
+    // shuttle keeps adding evidence along its path while noise does not.
+    if (tr.verified && this.lastDiff && tr.misses > 0 && this.tbdOn !== false) {
+      const soft = this.softResponse(px, py);
+      tr.evid = 0.75 * (tr.evid || 0) + (soft.v / this.lastThresh - 0.5);
+      if (tr.evid > 1.6 && soft.v > 0.35 * this.lastThresh) {
+        const rr = { x: soft.x, y: soft.y, p: 0.5, area: Math.exp(tr.logA ?? 2), w: 2, h: 2, f: null, recovered: true, weak: true };
+        const { nis } = e.update(rr.x, rr.y, this.measVar(rr) * 3);
+        this.adaptQ(nis);
+        this.addMeas(tr, t, rr);
+        tr.misses = 0; tr.zoneSinceMeas = false; tr.evid = 0;
+        this.brain.searchOutcome(true);
+        return;
+      }
+    }
+    // learned template re-find around the prediction
     if (tr.misses > 0 && this.lastGray && tr.tpl) {
       const rec = this.templateRefind(tr, px, py, e);
       if (rec) {
