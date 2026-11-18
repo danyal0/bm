@@ -44,7 +44,7 @@ function defaults() {
     // err[s] = EMA of |prediction - measurement| / frameHeight after a stride of s frames
     // local "look harder here" search after a miss: threshold factor (learned),
     // and how often the search re-found the shuttle
-    search: { thrF: 0.55, found: 0, tried: 0 },
+    search: { thrF: 0.55, found: 0, tried: 0, w: [-2, 4, 1.5, -0.8, 1] },
     skip: { err: [0, 0.002, 0.003, 0.0045, 0.0065, 0.009, 0.012, 0.016, 0.021], n: [0, 0, 0, 0, 0, 0, 0, 0, 0], tol: 0.008 },
     heat: new Array(GX * GY).fill(0),
     heatMax: 0,
@@ -220,6 +220,22 @@ export class Brain {
   }
 
   // ---------- skip policy ----------
+  // learned re-find model: features [1, template NCC, contrast, distance, streak]
+  searchP(f) {
+    const w = this.data.search.w;
+    let z = 0;
+    for (let i = 0; i < w.length; i++) z += w[i] * f[i];
+    return 1 / (1 + Math.exp(-z));
+  }
+
+  // self-supervised: did a re-find turn out to be the shuttle (the next detection agrees)?
+  learnSearch(f, y) {
+    if (!this.learning) return;
+    const w = this.data.search.w, p = this.searchP(f), lr = 0.08;
+    for (let i = 0; i < w.length; i++) w[i] = Math.min(8, Math.max(-8, w[i] + lr * (y - p) * f[i]));
+    this.dirty = true;
+  }
+
   // learned: lower the threshold to thrF × T inside the search disc.
   // Re-found → be more aggressive; a false re-find (rejected later) → back off.
   searchOutcome(found) {

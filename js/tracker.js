@@ -36,6 +36,7 @@ const SIGMA_A = 2.2;      // base acceleration noise (frame-heights / s²)
 const HIT_CONFIRM = 3;    // points needed to accept a new trajectory
 const AREA_SD = 0.6;      // log-area consistency along a track
 const G_EARTH = 9.81;
+const TPL_R = 4;          // template half-size (9×9 px)
 const LIFT_AT = [10, 14, 18, 24, 30, 40, 55, 75];
 
 export class Tracker {
@@ -307,6 +308,8 @@ export class Tracker {
     const gap = idx - this.lastProcIdx;
     const mode = this.mode;
     this.lastProcIdx = idx;
+    this.lastGray = det.gray || null;   // greyscale at processing resolution (valid this call only)
+    this.grayW = this.W; this.grayH = this.H;
     if (det.cut) {                       // scene cut: nothing carries over
       this.track = null; this.tents = []; this.trail.length = 0; this.plannedStride = 1; this.lastEnded = null; this.pendingLands = [];
       this.mode = 'SEARCH';
@@ -450,6 +453,73 @@ export class Tracker {
   // once a flight is confirmed, show its earlier part too
   retrofill(id) { for (const p of this.trail) if (p.id === id) p.v = true; }
 
+  // ---- template & NCC re-find -------------------------------------------
+  patchAt(x, y) {
+    const g = this.lastGray, W = this.grayW, H = this.grayH, n = 2 * TPL_R + 1;
+    const out = new Float32Array(n * n);
+    const xi = Math.round(x), yi = Math.round(y);
+    if (xi < TPL_R || yi < TPL_R || xi >= W - TPL_R || yi >= H - TPL_R) return null;
+    let m = 0;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) { const v = g[(yi - TPL_R + j) * W + xi - TPL_R + i]; out[j * n + i] = v; m += v; }
+    m /= n * n;
+    let ss = 0;
+    for (let k = 0; k < out.length; k++) { out[k] -= m; ss += out[k] * out[k]; }
+    const sd = Math.sqrt(ss) || 1;
+    for (let k = 0; k < out.length; k++) out[k] /= sd;
+    return out;
+  }
+
+  nccAt(tpl, x, y) {
+    const g = this.lastGray, W = this.grayW, n = 2 * TPL_R + 1;
+    const xi = Math.round(x), yi = Math.round(y);
+    if (xi < TPL_R || yi < TPL_R || xi >= W - TPL_R || yi >= this.grayH - TPL_R) return -1;
+    let m = 0;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) m += g[(yi - TPL_R + j) * W + xi - TPL_R + i];
+    m /= n * n;
+    let dot = 0, ss = 0;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const v = g[(yi - TPL_R + j) * W + xi - TPL_R + i] - m;
+      dot += v * tpl[j * n + i]; ss += v * v;
+    }
+    return dot / (Math.sqrt(ss) || 1);
+  }
+
+  // search a disc around the prediction for the template peak, zoom to sub-pixel
+  templateRefind(tr, px, py, e) {
+    const H = this.H, R = Math.min(0.12 * H, 4 + 2.5 * tr.misses), g = this.lastGray, W = this.grayW;
+    let best = null;
+    for (let y = Math.round(py - R); y <= Math.round(py + R); y++) for (let x = Math.round(px - R); x <= Math.round(px + R); x++) {
+      if ((x - px) ** 2 + (y - py) ** 2 > R * R) continue;
+      const c = this.nccAt(tr.tpl, x, y);
+      if (!best || c > best.ncc) best = { x, y, ncc: c };
+    }
+    if (!best || best.ncc < 0.4) return null;
+    // zoom: parabola through the NCC peak in x and y → sub-pixel position
+    const n0 = best.ncc, nxm = this.nccAt(tr.tpl, best.x - 1, best.y), nxp = this.nccAt(tr.tpl, best.x + 1, best.y);
+    const nym = this.nccAt(tr.tpl, best.x, best.y - 1), nyp = this.nccAt(tr.tpl, best.x, best.y + 1);
+    const dx = (nxm - nxp) / (2 * (nxm - 2 * n0 + nxp) || -1e-9), dy = (nym - nyp) / (2 * (nym - 2 * n0 + nyp) || -1e-9);
+    best.x += Math.max(-0.5, Math.min(0.5, dx || 0)); best.y += Math.max(-0.5, Math.min(0.5, dy || 0));
+    // streak: is the blob elongated along the predicted velocity?
+    const v = e.img(), sp = Math.hypot(v[2], v[3]) || 1, ux = v[2] / sp, uy = v[3] / sp;
+    const samp = (x, y) => g[Math.round(y) * W + Math.round(x)];
+    let along = 0, perp = 0;
+    for (let k = -3; k <= 3; k++) {
+      along += samp(best.x + ux * k, best.y + uy * k);
+      perp += samp(best.x - uy * k, best.y + ux * k);
+    }
+    const streak = Math.max(-1, Math.min(1, (along - perp) / 255 / 7 * 4));
+    const contrast = (samp(best.x, best.y) - 0) / 255;
+    const dNorm = Math.hypot(best.x - px, best.y - py) / (R + 1);
+    const f = [1, best.ncc, contrast, dNorm, streak];
+    const p = this.brain.searchP(f);
+    if (p < 0.85 || best.ncc < 0.6) return null;
+    return { x: best.x, y: best.y, p, f };
+  }
+
+  recoverMeas(tr, t, rec) {
+    return { x: rec.x, y: rec.y, p: rec.p, area: Math.exp(tr.logA ?? 2), w: 2, h: 2, f: null, recovered: true };
+  }
+
   areaPenalty(c, logA) {
     const z = (Math.log(Math.max(1, c.area)) - logA) / AREA_SD;
     return 0.5 * z * z;
@@ -499,6 +569,11 @@ export class Tracker {
       this.adaptQ(nis);
       tr.nisAvg = tr.nisAvg == null ? nis : tr.nisAvg + 0.25 * (Math.min(nis, 30) - tr.nisAvg);
       if (tr.misses > 0) this.brain.searchOutcome(true);   // the local search re-found it
+      if (tr.pendingRecover) {                               // self-supervision: did the next detection agree?
+        const pr = tr.pendingRecover;
+        this.brain.learnSearch(pr.f, Math.hypot(best.x - pr.x, best.y - pr.y) < 4 ? 1 : 0);
+        tr.pendingRecover = null;
+      }
       this.addMeas(tr, t, best);
       tr.misses = 0;
       tr.zoneSinceMeas = false;
@@ -510,13 +585,33 @@ export class Tracker {
         if (this.track !== tr) return;
         if (tr.nMeas % 2 === 0 && !this.validate(tr, t, ev, players)) return;
         if (tr.link && tr.nMeas >= 7 && tr.nisAvg < 4) this.linkEvent(tr, ev, players);
-        if (tr.verified && nis < 6) this.labelFrame(best, cands);
+        if (tr.verified && nis < 6 && !best.recovered) this.labelFrame(best, cands);
+      if (!best.recovered && tr.verified && (tr.conf ?? 0) > 0.7 && !tr.pending) tr.tpl = this.patchAt(best.x, best.y);
       }
       return;
     }
 
-    // ---- no consistent measurement
+    // ---- no consistent measurement: try the learned template re-find around the prediction
     if (tr.pending) this.revertManeuver(tr, t);
+    if (tr.misses > 0 && this.lastGray && tr.tpl) {
+      const rec = this.templateRefind(tr, px, py, e);
+      if (rec) {
+        if (tr.pendingRecover) this.brain.learnSearch(tr.pendingRecover.f, 0);
+        tr.pendingRecover = rec;
+        const rr = this.recoverMeas(tr, t, rec);
+        if (rr) {
+          const gapStart = tr.lastState;
+          const { nis } = e.update(rr.x, rr.y, this.measVar(rr));
+          this.adaptQ(nis);
+          this.addMeas(tr, t, rr);
+          tr.misses = 0; tr.zoneSinceMeas = false;
+          this.brain.searchOutcome(true);
+          if (gapStart) this.bridgeTrail(gapStart, { ekf: tr.ekf, t, id: tr.id }, tr.id);
+          return;
+        }
+      }
+    }
+    if (tr.pendingRecover && tr.misses > 0) { this.brain.learnSearch(tr.pendingRecover.f, 0); tr.pendingRecover = null; }
     if (this.grounded(tr, t)) { this.endTrack(t, ev, players, false); return; }
     const man = this.findManeuver(t, cands, players);
     if (man) { this.beginManeuver(t, man); return; }
