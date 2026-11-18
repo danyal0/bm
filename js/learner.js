@@ -42,6 +42,9 @@ function defaults() {
     lines: 'singles',
     detector: { w: INIT_W.slice(), areaMu: Math.log(8), areaVar: 1.2, threshMult: 3.2, pos: 0.5 },
     // err[s] = EMA of |prediction - measurement| / frameHeight after a stride of s frames
+    // local "look harder here" search after a miss: threshold factor (learned),
+    // and how often the search re-found the shuttle
+    search: { thrF: 0.55, found: 0, tried: 0 },
     skip: { err: [0, 0.002, 0.003, 0.0045, 0.0065, 0.009, 0.012, 0.016, 0.021], n: [0, 0, 0, 0, 0, 0, 0, 0, 0], tol: 0.008 },
     heat: new Array(GX * GY).fill(0),
     heatMax: 0,
@@ -217,6 +220,17 @@ export class Brain {
   }
 
   // ---------- skip policy ----------
+  // learned: lower the threshold to thrF × T inside the search disc.
+  // Re-found → be more aggressive; a false re-find (rejected later) → back off.
+  searchOutcome(found) {
+    if (!this.learning) return;
+    const sr = this.data.search;
+    sr.tried++; if (found) sr.found++;
+    sr.thrF += 0.02 * ((found ? 1 : 0) - 0.5) * (found ? 1 : 2) * 0.5;
+    sr.thrF = Math.min(0.85, Math.max(0.3, sr.thrF));
+    this.dirty = true;
+  }
+
   chooseStride(maxStride = 8) {
     const { err, tol } = this.data.skip;
     // allowed if skipping adds less than `tol` error over the every-frame baseline

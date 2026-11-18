@@ -258,6 +258,8 @@ export class Tracker {
     // look ahead: where will the shuttle be when the planned skip is over?
     const ta = t + this.plannedStride * this.dt;
     const ahead = this.stateAt(ta), w = this.worldAt(t), wa = this.worldAt(ta);
+    // a track that missed, or is not yet confident, is searched in EVERY frame
+    if (tr.misses > 0 || (tr.conf ?? 1) < 0.6) { this.mode = 'SEARCH+'; return true; }
     if (this.isCritical(s, players, w) || this.isCritical(ahead, players, wa)) { this.mode = 'CRITICAL'; return true; }
     this.mode = s[1] < -0.02 * this.H ? 'OFFSCREEN' : 'CRUISE';
     void tr;
@@ -289,7 +291,14 @@ export class Tracker {
       return null;
     }
     // only the 3D model is accurate enough to justify looking harder at one spot
-    const focus = tr.verified && !tr.pending && e.is3d && !(this.worldAt(t)[2] < 0.3) ? { x: s[0], y: s[1], r: Math.min(0.08 * H, Math.max(4, 3 * sig + 3)) } : null;
+    // Search disc around the physics prediction. After a miss it grows with the
+    // number of misses and the search is aggressive (lower threshold, no busy-
+    // background penalty) — the shuttle must be somewhere near that prediction.
+    const grow = 1 + 0.6 * Math.min(tr.misses, 6);
+    const rf = Math.min(0.15 * H, Math.max(5, (3 * sig + 4) * grow));
+    const focus = tr.verified && !tr.pending && !(e.is3d && this.worldAt(t)[2] < 0.3)
+      ? { x: s[0], y: s[1], r: rf, thrF: this.brain.data.search.thrF, aggressive: tr.misses > 0 }
+      : null;
     return { x0, y0, x1, y1, focus };
   }
 
@@ -489,6 +498,7 @@ export class Tracker {
       const { nis } = e.update(best.x, best.y, this.measVar(best));
       this.adaptQ(nis);
       tr.nisAvg = tr.nisAvg == null ? nis : tr.nisAvg + 0.25 * (Math.min(nis, 30) - tr.nisAvg);
+      if (tr.misses > 0) this.brain.searchOutcome(true);   // the local search re-found it
       this.addMeas(tr, t, best);
       tr.misses = 0;
       tr.zoneSinceMeas = false;
@@ -781,6 +791,7 @@ export class Tracker {
     this.plannedStride = 1;
     if (tr.pending) { tr.segment = tr.pending.prevSegment; tr.lastMeas = tr.pending.turn; tr.lastState = tr.pending.oldState; }
     if (!tr.verified) return; // never physics-confirmed: no events from it
+    if (tr.misses > 0) this.brain.searchOutcome(false);  // lost while searching
     this.learnFrom(tr.segment);
     const lm = tr.lastMeas, ls = tr.lastState;
     this.lastEnded = { ekf: ls.ekf, t: ls.t, lastEvent: null, id: tr.id };
