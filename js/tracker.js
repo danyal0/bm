@@ -816,14 +816,9 @@ export class Tracker {
             world: [fp[0], fp[1], 0], in: CourtCamera.lineCall(fp[0], fp[1], this.brain.data.lines !== 'doubles'), kmh: fc.speed * 3.6,
           };
           // touchdown inside a player's reach: wait — a new flight from them means it was hit
-          const reach = this.nearPlayer(draft.x, draft.y, players, 0.06 * this.H) >= 0 || this.nearPlayer(lm.x, lm.y, players, 0.06 * this.H) >= 0;
-          if (reach) {
-            this.pendingLands.push({ x: draft.x, y: draft.y, t0: t, tEv: draft.t, checks: 0, hits: 0, defer: draft, lastEnded: this.lastEnded });
-            ev.push({ type: 'lost', t, x: lm.x, y: lm.y });
-          } else {
-            ev.push(draft);
-            this.lastEnded.lastEvent = draft;
-          }
+          // a touchdown is only a landing once the shuttle is seen lying still
+          this.pendingLands.push({ x: draft.x, y: draft.y, t0: t, tEv: draft.t, checks: 0, hits: 0, defer: draft, lastEnded: this.lastEnded });
+          ev.push({ type: 'lost', t, x: lm.x, y: lm.y });
           return;
         }
       }
@@ -848,7 +843,7 @@ export class Tracker {
     const fl2 = this.floorEstimate();
     const lowEnough = this.cam ? true : (fl2 == null || lm.y > fl2 - 0.1 * this.H);
     const clear = this.nearPlayer(lm.x, lm.y, players, 0.04 * this.H) < 0;
-    if (!byPlayer && lowEnough && clear) this.pendingLands.push({ x: lm.x, y: lm.y, t0: t, tEv: lm.t + this.dt, checks: 0, hits: 0, kmh: this.kmhOf(ls.ekf), lastEnded: this.lastEnded });
+    if (!byPlayer && lowEnough && clear) this.pendingLands.push({ x: lm.x, y: lm.y, t0: t, tEv: lm.t + this.dt, checks: 0, hits: 0, kmh: this.kmhOf(ls.ekf), lastEnded: this.lastEnded, defer: { type: 'land', t: lm.t + this.dt, x: lm.x, y: lm.y, angle: 0, player: -1, src: 'still', kmh: this.kmhOf(ls.ekf) } });
     ev.push({ type: 'lost', t, x: lm.x, y: lm.y });
   }
 
@@ -860,21 +855,13 @@ export class Tracker {
       const c = stillContrast(gray, W, H, pl.x, pl.y);
       pl.checks++;
       if (c > 20) pl.hits++;
-      if (pl.defer) {
-        // touchdown inside a player's reach: only a shuttle seen lying there proves
-        // it landed (players catch, tap and lift shuttles right at their feet)
-        if (pl.hits >= 3) {
-          ev.push(pl.defer);
-          if (pl.lastEnded) pl.lastEnded.lastEvent = pl.defer;
-          return false;
-        }
-        return t - pl.t0 <= 0.6;
-      }
-      if (t - pl.t0 > 0.6) return false;
-      if (pl.checks < 6) return true;
-      if (pl.hits >= 4) {
-        const e = { type: 'land', t: pl.tEv, x: pl.x, y: pl.y, angle: 0, player: -1, src: 'still', kmh: pl.kmh };
-        if (this.cam) {
+      // Every landing waits for proof: the shuttle must lie still at the touchdown
+      // spot for ~0.5 s (≥80% of the checks bright and in place). A shuttle that
+      // starts flying again is not grounded; players tap and lift it right at their feet.
+      if (pl.checks < 6) return t - pl.t0 <= 0.8;
+      if (pl.hits >= 0.8 * pl.checks && pl.hits >= 5) {
+        const e = { ...pl.defer, t: pl.tEv };
+        if (this.cam && !e.world) {
           const fp = this.cam.floorAt(pl.x, pl.y);
           if (fp) { e.world = [fp[0], fp[1], 0]; e.in = CourtCamera.lineCall(fp[0], fp[1], this.brain.data.lines !== 'doubles'); }
         }
@@ -951,7 +938,7 @@ export class Tracker {
     const link = this.lastEnded && p0.t - this.lastEnded.t < 0.7 ? this.lastEnded : null;
     this.lastEnded = null;
     // a "landed" shuttle that flies off again was hit, not grounded
-    this.pendingLands = this.pendingLands.filter(pl => Math.hypot(pl.x - p0.x, pl.y - p0.y) > (pl.defer ? 0.25 : 0.08) * H);
+    this.pendingLands = this.pendingLands.filter(pl => Math.hypot(pl.x - p0.x, pl.y - p0.y) > 0.1 * H);
     this.track = {
       ekf: e, t: p2.t, lastMeas: p2, lastState: { ekf: e.clone(), t: p2.t },
       nMeas: 3, misses: 0, hist: pts.slice(), segment: pts.slice(), pending: null, start: p2.t, lastEvent: null,
