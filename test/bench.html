@@ -42,7 +42,7 @@ for (const seed of seeds) {
   Math.random = mulberry32(seed);
   const demo = behind ? new DemoRally3D() : new DemoRally();
   if (behind && faint) demo.faint = faint;
-  const tbdOn = q.get('tbd') !== '0';
+  const tbdOn = q.get('tbd') === '1';
   demo.simClock = true;
   demo.broadcast = broadcast;
   const det = new MotionDetector();

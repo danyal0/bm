@@ -45,6 +45,7 @@ det.configure(W, H, W);
 const tracker = new Tracker(brain);
 tracker.setGeometry(det.W, det.H);
 tracker.dt = 1 / fps;
+tracker.tbdOn = opt('tbd', '0') === '1';
 let cam = null;
 if (calib) {
   const j = JSON.parse(readFileSync(calib, 'utf8'));

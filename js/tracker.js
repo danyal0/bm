@@ -75,6 +75,7 @@ export class Tracker {
     this.fullCounter = 0;
     this.rejects = [];
     this.lastEnded = null;
+    this.ring = [];
     this.pendingLands = [];
     this.disp = null;
   }
@@ -310,6 +311,12 @@ export class Tracker {
     this.lastProcIdx = idx;
     this.lastGray = det.gray || null;   // greyscale at processing resolution (valid this call only)
     this.lastDiff = det.diff || null; this.lastThresh = det.thresh || 9;   // un-thresholded motion response
+    // ring of recent full-frame motion responses (for track-before-detect)
+    if (det.diff && !det.cut && det.full) {
+      this.ring = this.ring || [];
+      this.ring.push({ t, d: Uint8Array.from(det.diff) });
+      if (this.ring.length > 8) this.ring.shift();
+    } else if (!this.track) this.ring = [];
     this.grayW = this.W; this.grayH = this.H;
     if (det.cut) {                       // scene cut: nothing carries over
       this.track = null; this.tents = []; this.trail.length = 0; this.plannedStride = 1; this.lastEnded = null; this.pendingLands = [];
@@ -610,7 +617,7 @@ export class Tracker {
     // Track-before-detect: weak motion response near the prediction, accumulated over
     // frames. Each frame adds evidence only if it is above the noise threshold; a real
     // shuttle keeps adding evidence along its path while noise does not.
-    if (tr.verified && this.lastDiff && tr.misses > 0 && this.tbdOn !== false) {
+    if (tr.verified && this.lastDiff && tr.misses > 0 && this.tbdOn === true) {
       const soft = this.softResponse(px, py);
       tr.evid = 0.75 * (tr.evid || 0) + (soft.v / this.lastThresh - 0.5);
       if (tr.evid > 1.6 && soft.v > 0.35 * this.lastThresh) {
@@ -1058,8 +1065,67 @@ export class Tracker {
       kept.push(T);
     }
     if (bestT) { this.startTrack(bestT, ev, players); return; }
+    if (this.tbdOn === true && this.tbdSearch(t, ev)) return;
     kept.sort((a, b) => b.pts.length - a.pts.length);
     this.tents = kept.slice(0, 80);
+  }
+
+  // ---- track-before-detect -----------------------------------------------
+  // Score physics-consistent launches over the whole window of recent frames,
+  // summing weak motion response along each path (a faint shuttle adds up, noise
+  // does not). The best path that is supported in most frames starts a track
+  // with all its observations, so verification can begin at once.
+  tbdSearch(t, ev) {
+    const R = this.ring, N = R ? R.length : 0;
+    if (N < 6) return false;
+    const W = this.grayW, H = this.grayH, th = this.lastThresh;
+    const first = R[0], last = R[N - 1], T = last.t - first.t;
+    if (!(T > 0.05)) return false;
+    // candidate starts: strongest 6×6 cells of the oldest frame
+    const C = 6, starts = [];
+    for (let cy = 0; cy < H; cy += C) for (let cx = 0; cx < W; cx += C) {
+      let bv = 0, bx = 0, by = 0;
+      for (let y = cy; y < Math.min(H, cy + C); y++) for (let x = cx; x < Math.min(W, cx + C); x++) {
+        const v = first.d[y * W + x]; if (v > bv) { bv = v; bx = x; by = y; }
+      }
+      if (bv >= 0.7 * th) starts.push({ x: bx, y: by, v: bv });
+    }
+    starts.sort((a, b) => b.v - a.v);
+    const g = this.phys.g * H, vmax = VMAX * H * 0.6;
+    let best = null;
+    const K = 9;
+    for (const s of starts.slice(0, 25)) {
+      for (let a = 0; a < K; a++) for (let b = 0; b < K; b++) {
+        const vx = -vmax + (2 * vmax * a) / (K - 1), vy = -1.2 * vmax + (1.4 * vmax * b) / (K - 1);
+        let score = 0, count = 0; const obs = [{ t: first.t, x: s.x, y: s.y, v: s.v }];
+        for (let i = 1; i < N; i++) {
+          const dt = R[i].t - first.t;
+          const px = s.x + vx * dt, py = s.y + vy * dt + 0.5 * g * dt * dt;
+          const q = softAt(R[i].d, W, H, px, py);
+          if (!q) { score -= 0.5; continue; }
+          const val = Math.min(q.v / th, 2);
+          score += val; if (q.v >= 0.6 * th) count++;
+          obs.push({ t: R[i].t, x: q.x, y: q.y, v: q.v });
+        }
+        if (count < 0.9 * (N - 1)) continue;
+        if (!best || score > best.score) best = { score, count, obs };
+      }
+    }
+    if (!best || best.score < 1.2 * (N - 1)) return false;
+    // start from the last three observations, then feed the rest of the window in
+    const o = best.obs;
+    const mk = q => ({ t: q.t, x: q.x, y: q.y, p: 0.5, f: null, area: 8, w: 2, h: 2 });
+    const pts = o.slice(-3).map(mk);
+    this.startTrack({ pts }, ev);
+    if (this.track) {
+      const tr = this.track, seg = o.map(mk);
+      tr.segment = seg.slice(); tr.hist = seg.slice();
+      tr.nMeas = seg.length; tr.lastMeas = seg[seg.length - 1];
+      tr.lastState = { ekf: tr.ekf.clone(), t: tr.t };
+      tr.tbd = true;
+    }
+    this.ring = [];
+    return true;
   }
 
   startTrack(T, ev) {
@@ -1265,6 +1331,18 @@ export class Tracker {
     }
     return { pts, landing };
   }
+}
+
+// strongest response in a 5×5 window of a full-frame response map
+function softAt(d, W, H, x, y) {
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi < 3 || yi < 3 || xi >= W - 3 || yi >= H - 3) return null;
+  let best = { v: 0, x: xi, y: yi };
+  for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) {
+    const v = d[(yi + j) * W + xi + i];
+    if (v > best.v) best = { v, x: xi + i, y: yi + j };
+  }
+  return best;
 }
 
 // candidate sits on a player (skeleton bone or inside a big moving blob)
